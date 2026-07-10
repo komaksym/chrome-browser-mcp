@@ -10,6 +10,7 @@ if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
   exit 2
 fi
 
+NODE_BIN="$(command -v node)"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 npm ci
@@ -17,11 +18,24 @@ npm run build
 
 HOST_DIR="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
 HOST_MANIFEST="$HOST_DIR/com.komaksym.chrome_browser_mcp.json"
-WRAPPER="$ROOT/scripts/native-host-wrapper.sh"
-mkdir -p "$HOST_DIR"
-chmod +x "$WRAPPER"
+APP_DIR="$HOME/Library/Application Support/Chrome Browser MCP"
+INSTALLED_WRAPPER="$APP_DIR/native-host-wrapper.sh"
+BRIDGE_ENTRY="$ROOT/dist/bridge/index.js"
+mkdir -p "$HOST_DIR" "$APP_DIR"
 
-node --input-type=module - "$HOST_MANIFEST" "$WRAPPER" <<'NODE'
+# Chrome launched from Finder does not inherit shell initialization, Homebrew,
+# or nvm PATH entries. Install a dedicated wrapper with absolute executable
+# paths so the native host starts in Chrome's minimal environment.
+printf -v NODE_BIN_QUOTED '%q' "$NODE_BIN"
+printf -v BRIDGE_ENTRY_QUOTED '%q' "$BRIDGE_ENTRY"
+cat > "$INSTALLED_WRAPPER" <<EOF
+#!/bin/bash
+set -euo pipefail
+exec $NODE_BIN_QUOTED $BRIDGE_ENTRY_QUOTED "\$@"
+EOF
+chmod 700 "$INSTALLED_WRAPPER"
+
+"$NODE_BIN" --input-type=module - "$HOST_MANIFEST" "$INSTALLED_WRAPPER" <<'NODE'
 import { writeFileSync } from "node:fs";
 const [, , manifestPath, wrapperPath] = process.argv;
 writeFileSync(
@@ -40,6 +54,9 @@ cat <<EOF2
 
 Installed the native host manifest:
   $HOST_MANIFEST
+
+Installed a Chrome-safe native host wrapper using:
+  $NODE_BIN
 
 Now load this unpacked extension in chrome://extensions:
   $ROOT/dist/extension
