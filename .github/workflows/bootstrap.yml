@@ -6,6 +6,11 @@ on:
     paths:
       - ".bootstrap/**"
       - ".github/workflows/bootstrap.yml"
+  pull_request:
+    paths:
+      - ".bootstrap/**"
+      - ".github/workflows/bootstrap.yml"
+      - ".bootstrap-trigger"
   workflow_dispatch:
 
 permissions:
@@ -19,8 +24,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+
+      - name: Check whether publication is needed
+        id: check
+        run: |
+          if [ -f .bootstrap/source.part.00 ]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Reconstruct and verify archive
+        if: steps.check.outputs.needed == 'true'
         run: |
           set -euo pipefail
           cat .bootstrap/source.part.* > /tmp/chrome-browser-mcp.zip.b64
@@ -29,17 +45,19 @@ jobs:
           unzip -oq /tmp/chrome-browser-mcp.zip -d .
 
       - name: Remove bootstrap artifacts
+        if: steps.check.outputs.needed == 'true'
         run: |
           set -euo pipefail
-          rm -rf .bootstrap
+          rm -rf .bootstrap .bootstrap-trigger
           rm -f .github/workflows/bootstrap.yml
           chmod +x scripts/*.sh
 
       - name: Commit tested source
+        if: steps.check.outputs.needed == 'true'
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "Publish tested Chrome Browser MCP v0.1.0"
-          git push origin HEAD:main
+          git push origin HEAD:${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
