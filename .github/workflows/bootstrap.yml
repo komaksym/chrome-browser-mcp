@@ -44,12 +44,15 @@ jobs:
           echo "def9d71356eb9e09d6dbb7ee234cf8591f8b4ae945f56e4337cf294ad6e263c5  /tmp/chrome-browser-mcp.zip" | sha256sum --check
           unzip -oq /tmp/chrome-browser-mcp.zip -d .
 
-      - name: Remove bootstrap artifacts
+      - name: Prepare ordinary source commit
         if: steps.check.outputs.needed == 'true'
         run: |
           set -euo pipefail
           rm -rf .bootstrap .bootstrap-trigger
-          rm -f .github/workflows/bootstrap.yml
+          # GitHub workflow tokens cannot create or replace workflow files.
+          # The authenticated GitHub connector adds CI and removes this
+          # one-time bootstrap workflow after the source commit lands.
+          rm -f .github/workflows/ci.yml
           chmod +x scripts/*.sh
 
       - name: Commit tested source
