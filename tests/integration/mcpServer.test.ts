@@ -11,10 +11,18 @@ afterEach(async () => {
 });
 
 describe("MCP HTTP server", () => {
-  it("advertises and calls read-only Chrome tools over Streamable HTTP", async () => {
+  it("advertises read and write Chrome tools over Streamable HTTP", async () => {
+    const requests: Array<{ method: string; args: Record<string, unknown> }> = [];
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
-      request: (method: string) => Promise.resolve(method === "list_tabs" ? { tabs: [{ tabId: 1, title: "Example" }], count: 1 } : {}),
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        requests.push({ method, args });
+        return Promise.resolve(
+          method === "list_tabs"
+            ? { tabs: [{ tabId: 1, title: "Example" }], count: 1 }
+            : { method, args },
+        );
+      },
     } as BrowserClient;
     const httpServer = await startHttpMcpServer(fakeBrowser, 0);
     servers.push(httpServer);
@@ -32,11 +40,25 @@ describe("MCP HTTP server", () => {
       "read_tab",
       "read_tabs",
       "search_tabs",
+      "click",
+      "type",
+      "fill_form",
+      "press_key",
+      "scroll",
+      "select_option",
+      "navigate",
+      "new_tab",
+      "close_tab",
     ]);
-    expect(tools.tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
+    expect(tools.tools.slice(0, 6).every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
+    expect(tools.tools.slice(6).every((tool) => tool.annotations?.readOnlyHint === false)).toBe(true);
 
-    const result = await client.callTool({ name: "list_tabs", arguments: {} });
-    expect(result.structuredContent).toEqual({ tabs: [{ tabId: 1, title: "Example" }], count: 1 });
+    const listed = await client.callTool({ name: "list_tabs", arguments: {} });
+    expect(listed.structuredContent).toEqual({ tabs: [{ tabId: 1, title: "Example" }], count: 1 });
+
+    const clicked = await client.callTool({ name: "click", arguments: { tabId: 1, target: "Apply" } });
+    expect(clicked.structuredContent).toEqual({ method: "click", args: { tabId: 1, target: "Apply" } });
+    expect(requests).toContainEqual({ method: "click", args: { tabId: 1, target: "Apply" } });
     await client.close();
   });
 });

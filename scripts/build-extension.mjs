@@ -15,7 +15,7 @@ const manifest = {
   manifest_version: 3,
   name: "Chrome Browser MCP",
   version: "0.1.0",
-  description: "Read-only local Chrome access for a private ChatGPT MCP app.",
+  description: "Local Chrome read/write access for a private ChatGPT MCP app.",
   key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsN2PDxGGdi4kzCaNghCrqsG9k12qKj5zfmHsfJ2Aa4AnRSbAie0jy2nqwJtgEKxsZmWRff10BG5Br1GXBKY2NRIPZaIx5u2GO206nJIq8q2mvxbdRGiiPJiX0gskVGB/lLOGo3rg+AjELyUhm6yU9R27dnoOrMqjWM3GXy3UEa4ZfLm61Cli9u46liHLfCowr1AQm2+g2qaGdHBkBriPg/HqhgUYdIhFOepdiHS30BOm/OIy7U3mcQj0+NLmlACQHLqFFgUpQnhjj2pDOX9rzLvTDLBCtUzYPdK6CakDMsBEHrVyX3P1VWpodeH5RREp6Vr/5nRR78L+5n8L1GdLAwIDAQAB",
   minimum_chrome_version: "120",
   permissions: ["tabs", "scripting", "nativeMessaging"],

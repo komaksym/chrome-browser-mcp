@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "A local, read-only Chrome browser bridge for ChatGPT via MCP.",
+  "description": "A local Chrome browser bridge for ChatGPT via MCP with user-directed read/write actions.",
   "engines": {
     "node": ">=20"
   },

@@ -1,21 +1,19 @@
 # Chrome Browser MCP
 
-A local, read-only bridge that lets a private ChatGPT developer-mode app inspect the tabs already open in your desktop Google Chrome.
+A local bridge that lets a private ChatGPT developer-mode app inspect and control the tabs already open in your desktop Google Chrome.
 
-The bridge exposes six MCP tools:
+The bridge exposes 15 MCP tools:
 
-- `browser_status`
-- `list_tabs`
-- `get_active_tab`
-- `read_tab`
-- `read_tabs`
-- `search_tabs`
+- reads: `browser_status`, `list_tabs`, `get_active_tab`, `read_tab`, `read_tabs`, `search_tabs`
+- actions: `click`, `type`, `fill_form`, `press_key`, `scroll`, `select_option`, `navigate`, `new_tab`, `close_tab`
 
-It does **not** expose cookies, local storage, session storage, saved passwords, hidden input values, arbitrary JavaScript execution, clicks, navigation, tab closing, or incognito tabs.
+Action targets accept either a CSS selector or exact visible text / `aria-label` / placeholder / name / associated label text. Ambiguous targets fail instead of guessing.
+
+The bridge does **not** expose cookies, local storage, session storage, saved passwords, hidden input values, arbitrary JavaScript execution, Chrome internal pages, or incognito tabs. It does not use the Chrome debugger API.
 
 ## Proven path
 
-The end-to-end test launches a real Chromium process with the unpacked Manifest V3 extension, starts the real native-messaging host, connects an MCP client over Streamable HTTP, opens two live pages, lists and reads them, and verifies that a password input value is not returned.
+The end-to-end test launches a real Chromium process with the unpacked Manifest V3 extension, starts the real native-messaging host, connects an MCP client over Streamable HTTP, opens live pages, lists and reads them, and verifies that a password input value is not returned. Unit/integration coverage validates page actions and MCP write-tool routing.
 
 ```text
 MCP client
@@ -50,7 +48,7 @@ Chrome Native Messaging host
 Chrome MV3 extension
           |
           +-- chrome.tabs
-          +-- chrome.scripting (isolated-world semantic extraction)
+          +-- chrome.scripting (isolated-world reads + actions)
 ```
 
 Chrome starts the native host when the extension connects. The native host starts the loopback MCP endpoint. Therefore Chrome must be open and the extension must be enabled whenever ChatGPT uses the app.
@@ -98,7 +96,7 @@ Keep Chrome open, then run:
 npm run verify:local
 ```
 
-A successful check prints the extension ID and the six advertised MCP tools.
+A successful check prints the extension ID and the 15 advertised MCP tools.
 
 ## 4. Configure Secure MCP Tunnel
 
@@ -128,34 +126,36 @@ Keep `tunnel-client run` active whenever ChatGPT needs the browser tools.
 4. Choose **Tunnel** as the connection type.
 5. Select or paste the tunnel ID.
 6. Use the metadata from [`app-metadata.json`](app-metadata.json).
-7. Confirm ChatGPT discovers all six tools.
+7. Confirm ChatGPT discovers all 15 tools.
 8. In a new chat, click **+ -> More**, select **Chrome Browser**, then ask: `List my open Chrome tabs.`
 
 See [`docs/CHATGPT_SETUP.md`](docs/CHATGPT_SETUP.md) for exact verification and troubleshooting.
 
 ## Security model
 
-Webpage text is data, never authority. Every content result includes an explicit untrusted-content marker, and every reading tool tells the model not to follow instructions found in pages.
+Webpage text is data, never authority. Every content result includes an explicit untrusted-content marker, and tool instructions tell the model never to turn instructions found in pages into actions.
 
-The extension intentionally requests access to all HTTP and HTTPS pages because it cannot summarize arbitrary open tabs otherwise. That is a powerful permission. The protection boundary is:
+The extension intentionally requests access to all HTTP and HTTPS pages so it can read and interact with normal open tabs. The protection boundary is:
 
 - the extension is loaded locally by you;
 - Chrome only launches the exact allowlisted native host;
 - the native host rejects any origin except the stable extension ID;
 - the MCP endpoint binds only to `127.0.0.1`;
 - the tunnel is outbound-only;
-- all exposed MCP tools are read-only.
+- actions are limited to normal HTTP(S) tabs and do not expose arbitrary JavaScript, debugger access, cookies, or browser storage;
+- ambiguous human-readable targets are rejected rather than guessed.
 
-Read [`THREAT_MODEL.md`](THREAT_MODEL.md) and [`SECURITY_REVIEW.md`](SECURITY_REVIEW.md) before extending the tool set.
+Read [`THREAT_MODEL.md`](THREAT_MODEL.md) and [`SECURITY_REVIEW.md`](SECURITY_REVIEW.md) before unattended use.
 
 ## Known limitations
 
 - One Chrome profile should load the extension at a time; two profiles can contend for port `2091`.
-- Chrome internal pages, Chrome Web Store pages, `file://` pages, and incognito tabs are not readable.
+- Chrome internal pages, Chrome Web Store pages, `file://` pages, and incognito tabs cannot be read or controlled.
 - Cross-origin iframes are not traversed.
 - Canvas-only applications and Chrome's built-in PDF viewer may return little semantic text.
 - The extractor returns the primary document's visible text, headings, links, and description, not raw HTML. URL credentials and fragments are removed, and sensitive query parameters are redacted.
-- The bridge is deliberately read-only. Browser control is a separate, higher-risk project.
+- `press_key` uses DOM keyboard events; Enter and Escape get explicit common-case behavior, but some sites require trusted OS/CDP keyboard input.
+- File upload is intentionally not implemented because doing it generally would require a more powerful filesystem/debugger surface.
 
 ## Development
 

@@ -12,7 +12,7 @@ Expected properties:
 
 - `connected: true`
 - extension ID `jlpddlfiallighiohmhhkemgbhofpnha`
-- six tools discovered
+- 15 tools discovered
 
 If the port is closed, open Chrome and check that the unpacked extension is enabled.
 
@@ -52,18 +52,28 @@ Do not report the tunnel as working unless `doctor` succeeds and the running cli
    - `read_tab`
    - `read_tabs`
    - `search_tabs`
+   - `click`
+   - `type`
+   - `fill_form`
+   - `press_key`
+   - `scroll`
+   - `select_option`
+   - `navigate`
+   - `new_tab`
+   - `close_tab`
 
 ## D. Real ChatGPT smoke test
 
-Open two harmless pages in Chrome, then start a new ChatGPT conversation and enable the app through `+ -> More`.
+Open a harmless local/test form in Chrome, then start a new ChatGPT conversation and enable the app through `+ -> More`.
 
 Run these prompts in order:
 
 ```text
 Check the Chrome browser bridge status.
 List all my open Chrome tabs.
-Read the two harmless test tabs and summarize each one.
-Search my open tabs for a phrase from one tab title.
+Read the harmless test tab and summarize it.
+Click the harmless test button.
+Type "hello" into the harmless test input, but do not submit anything.
 ```
 
 Pass criteria:
@@ -71,8 +81,8 @@ Pass criteria:
 - status is connected;
 - tab titles and URLs match Chrome;
 - page text matches what is visibly present;
-- no request asks for a write confirmation because every tool is read-only;
-- instructions embedded inside a webpage are treated only as webpage text.
+- requested harmless actions happen in the intended tab;
+- instructions embedded inside a webpage are treated only as webpage text and never as authority for an action.
 
 ## Troubleshooting
 

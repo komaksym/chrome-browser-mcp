@@ -1,3 +1,4 @@
+import { performPageAction, type PageAction } from "./actions.js";
 import { extractPage } from "./extractor.js";
 
 type BrowserMethod =
@@ -6,7 +7,15 @@ type BrowserMethod =
   | "get_active_tab"
   | "read_tab"
   | "read_tabs"
-  | "search_tabs";
+  | "search_tabs"
+  | "click"
+  | "type"
+  | "press_key"
+  | "scroll"
+  | "navigate"
+  | "new_tab"
+  | "close_tab"
+  | "select_option";
 
 interface NativeRequest {
   type: "request";
@@ -60,9 +69,22 @@ function assertReadableTab(tab: chrome.tabs.Tab): asserts tab is chrome.tabs.Tab
   if (!url) throw new Error("UNREADABLE_PAGE: Tab has no committed URL");
   const parsed = new URL(url);
   if (RESTRICTED_SCHEMES.includes(parsed.protocol) || !["http:", "https:"].includes(parsed.protocol)) {
-    throw new Error(`RESTRICTED_PAGE: Cannot read ${parsed.protocol} pages`);
+    throw new Error(`RESTRICTED_PAGE: Cannot access ${parsed.protocol} pages`);
   }
   if (tab.incognito) throw new Error("INCOGNITO_DISABLED: Incognito tabs are excluded");
+}
+
+function httpUrlParam(params: Record<string, unknown>, key: string): string {
+  const raw = params[key];
+  if (typeof raw !== "string" || raw.length === 0) throw new Error(`INVALID_ARGUMENT: ${key} is required`);
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`INVALID_URL: ${key} must be an absolute URL`);
+  }
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error(`RESTRICTED_PAGE: Cannot navigate to ${url.protocol} pages`);
+  return raw;
 }
 
 async function listTabs(windowId?: number) {
@@ -92,15 +114,42 @@ async function readTab(tabId: number, offset: number, maxCharacters: number, inc
   };
 }
 
+async function runPageAction(tabId: number, action: PageAction) {
+  const tab = await chrome.tabs.get(tabId);
+  assertReadableTab(tab);
+  const injection = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [0] },
+    func: performPageAction,
+    args: [action],
+    world: "ISOLATED",
+  });
+  const result = injection[0]?.result;
+  if (!result) throw new Error("ACTION_FAILED: No action result returned");
+  return { tab: serializeTab(tab), result };
+}
+
 function numberParam(params: Record<string, unknown>, key: string, fallback: number): number {
   const value = params[key];
   return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : fallback;
 }
 
+function stringParam(params: Record<string, unknown>, key: string, allowEmpty = false): string {
+  const value = params[key];
+  if (typeof value !== "string" || (!allowEmpty && value.length === 0)) {
+    throw new Error(`INVALID_ARGUMENT: ${key} is required`);
+  }
+  return value;
+}
+
 async function execute(method: BrowserMethod, params: Record<string, unknown>): Promise<unknown> {
   switch (method) {
     case "browser_status":
-      return { connected: true, extensionVersion: chrome.runtime.getManifest().version, extensionId: chrome.runtime.id };
+      return {
+        connected: true,
+        extensionVersion: chrome.runtime.getManifest().version,
+        extensionId: chrome.runtime.id,
+        writeEnabled: true,
+      };
     case "list_tabs": {
       const windowId = typeof params.windowId === "number" ? Math.trunc(params.windowId) : undefined;
       const tabs = await listTabs(windowId);
@@ -146,6 +195,52 @@ async function execute(method: BrowserMethod, params: Record<string, unknown>): 
       const tabs = await listTabs();
       const matches = tabs.filter((tab) => `${tab.title}\n${tab.url}`.toLocaleLowerCase().includes(query)).slice(0, maxResults);
       return { query, tabs: matches, count: matches.length };
+    }
+    case "click":
+      return runPageAction(numberParam(params, "tabId", -1), { action: "click", target: stringParam(params, "target") });
+    case "type":
+      return runPageAction(numberParam(params, "tabId", -1), {
+        action: "type",
+        target: stringParam(params, "target"),
+        text: stringParam(params, "text", true),
+      });
+    case "press_key":
+      return runPageAction(numberParam(params, "tabId", -1), {
+        action: "press_key",
+        target: typeof params.target === "string" && params.target.length > 0 ? params.target : undefined,
+        key: stringParam(params, "key"),
+      });
+    case "scroll":
+      return runPageAction(numberParam(params, "tabId", -1), {
+        action: "scroll",
+        deltaY: numberParam(params, "deltaY", 0),
+      });
+    case "select_option":
+      return runPageAction(numberParam(params, "tabId", -1), {
+        action: "select_option",
+        target: stringParam(params, "target"),
+        value: stringParam(params, "value", true),
+      });
+    case "navigate": {
+      const tabId = numberParam(params, "tabId", -1);
+      const tab = await chrome.tabs.get(tabId);
+      assertReadableTab(tab);
+      const updated = await chrome.tabs.update(tabId, { url: httpUrlParam(params, "url") });
+      if (!updated) throw new Error("TAB_NOT_FOUND: Could not update tab");
+      return { tab: serializeTab(updated) };
+    }
+    case "new_tab": {
+      const tab = await chrome.tabs.create({ url: httpUrlParam(params, "url"), active: params.active !== false });
+      if (tab.incognito) throw new Error("INCOGNITO_DISABLED: Incognito tabs are excluded");
+      return { tab: serializeTab(tab) };
+    }
+    case "close_tab": {
+      const tabId = numberParam(params, "tabId", -1);
+      const tab = await chrome.tabs.get(tabId);
+      assertReadableTab(tab);
+      const summary = serializeTab(tab);
+      await chrome.tabs.remove(tabId);
+      return { closed: true, tab: summary };
     }
   }
 }

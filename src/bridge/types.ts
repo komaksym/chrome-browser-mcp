@@ -4,7 +4,15 @@ export type BrowserMethod =
   | "get_active_tab"
   | "read_tab"
   | "read_tabs"
-  | "search_tabs";
+  | "search_tabs"
+  | "click"
+  | "type"
+  | "press_key"
+  | "scroll"
+  | "navigate"
+  | "new_tab"
+  | "close_tab"
+  | "select_option";
 
 export interface NativeRequest {
   type: "request";
