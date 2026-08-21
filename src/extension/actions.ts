@@ -47,12 +47,12 @@ export function performPageAction(action: PageAction) {
     } catch {
       // Not a CSS selector; fall back to human-readable element names.
     }
-    if (selectorMatches.length === 1) return selectorMatches[0];
+    if (selectorMatches.length === 1) return selectorMatches[0]!;
     if (selectorMatches.length > 1) throw new Error(`AMBIGUOUS_TARGET: ${target}`);
 
     const wanted = normalize(target);
     const matches = interactive().filter((element) => names(element).includes(wanted));
-    if (matches.length === 1) return matches[0];
+    if (matches.length === 1) return matches[0]!;
     if (matches.length > 1) throw new Error(`AMBIGUOUS_TARGET: ${target}`);
     throw new Error(`TARGET_NOT_FOUND: ${target}`);
   };
