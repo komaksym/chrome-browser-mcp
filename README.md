@@ -2,7 +2,7 @@
 
 A local bridge that lets a private ChatGPT developer-mode app inspect and control the tabs already open in your desktop Google Chrome.
 
-Current patch version: **0.1.1**. Every patch must bump this version; CI rejects patches that do not.
+Current patch version: **0.1.2**. Every patch must bump this version; CI rejects patches that do not.
 
 The bridge exposes 17 MCP tools:
 
@@ -18,7 +18,7 @@ The bridge does **not** expose cookies, local storage, session storage, saved pa
 
 ## Proven path
 
-The end-to-end test launches a real Chromium process with the unpacked Manifest V3 extension, starts the real native-messaging host, connects an MCP client over Streamable HTTP, opens live pages, lists and reads them, and verifies that a password input value is not returned. Unit/integration coverage validates page actions, MCP routing, ChatGPT child-agent tool registration/composition, and generated extension-version synchronization.
+The end-to-end test launches a real Chromium process with the unpacked Manifest V3 extension, starts the real native-messaging host, connects an MCP client over Streamable HTTP, opens live pages, lists and reads them, and verifies that a password input value is not returned. Unit/integration coverage validates page actions, MCP routing, ChatGPT child-agent tool registration/composition, generated extension-version synchronization, and that the runtime files used by Chrome/native messaging are tracked by Git.
 
 ```text
 MCP client
@@ -67,7 +67,7 @@ Chrome starts the native host when the extension connects. The native host start
 - An OpenAI Platform tunnel ID and runtime API key with Tunnels Read + Use
 - `tunnel-client`
 
-## 1. Install the native host and build the extension
+## 1. Install the native host and load the extension once
 
 ```bash
 npm run install:mac
@@ -79,7 +79,7 @@ This installs the native-host manifest at:
 ~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.komaksym.chrome_browser_mcp.json
 ```
 
-## 2. Load the Chrome extension once
+Then:
 
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
@@ -93,9 +93,21 @@ jlpddlfiallighiohmhhkemgbhofpnha
 
 Do not proceed if the ID differs. The native host only accepts that exact extension origin.
 
-**You only select the directory once.** For later patches, keep the same unpacked extension installed: update/rebuild the same local checkout, then click Chrome's **Update** button. The visible extension version must change for every patch; if it does not, you are still loading the old build.
+## 2. Updating future patches
 
-Chrome's **Update** button reloads files already present in that local `dist/extension` directory. It does not fetch GitHub or rebuild the Node MCP bridge by itself.
+**You select the extension directory only once.** The built extension and MCP bridge under `dist/` are committed to Git, and CI rejects source changes whose committed runtime build is stale.
+
+For every later patch, the normal update flow is exactly:
+
+```bash
+git pull
+```
+
+Then open `chrome://extensions` and click **Update**. Do not select the extension path again and do not run a separate build command just to consume a published patch.
+
+`git pull` updates both `dist/extension` (what Chrome loads) and `dist/bridge` (what the native host executes). Clicking **Update** reloads the unpacked extension/native-messaging connection so the newly pulled runtime is used.
+
+The visible extension version must change on every patch. For this patch it must show **0.1.2**. If it still shows an older version, the pulled runtime was not applied.
 
 ## 3. Verify the local browser chain
 
@@ -183,6 +195,7 @@ npm run version:check
 npm run typecheck
 npm run lint
 npm test
+npm run artifacts:check
 npm run test:e2e
 npm audit
 ```
