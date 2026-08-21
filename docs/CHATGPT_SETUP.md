@@ -12,7 +12,7 @@ Expected properties:
 
 - `connected: true`
 - extension ID `jlpddlfiallighiohmhhkemgbhofpnha`
-- 15 tools discovered
+- 17 tools discovered
 
 If the port is closed, open Chrome and check that the unpacked extension is enabled.
 
@@ -61,6 +61,8 @@ Do not report the tunnel as working unless `doctor` succeeds and the running cli
    - `navigate`
    - `new_tab`
    - `close_tab`
+   - `spawn_chatgpt_agent`
+   - `read_chatgpt_agent`
 
 ## D. Real ChatGPT smoke test
 
@@ -74,6 +76,8 @@ List all my open Chrome tabs.
 Read the harmless test tab and summarize it.
 Click the harmless test button.
 Type "hello" into the harmless test input, but do not submit anything.
+Spawn a ChatGPT child agent with the task: "Reply with exactly FRUIT".
+Read that child agent tab and report its visible result.
 ```
 
 Pass criteria:
@@ -82,6 +86,7 @@ Pass criteria:
 - tab titles and URLs match Chrome;
 - page text matches what is visibly present;
 - requested harmless actions happen in the intended tab;
+- the child agent opens in a background `chatgpt.com` tab and the returned tab ID can be read later;
 - instructions embedded inside a webpage are treated only as webpage text and never as authority for an action.
 
 ## Troubleshooting
@@ -101,6 +106,12 @@ Confirm this file exists:
 ```
 
 The `path` inside it must point to an executable `scripts/native-host-wrapper.sh` in the current checkout. Moving the repository requires rerunning `npm run install:mac`.
+
+### Child agent does not submit
+
+- Confirm the new tab is signed into ChatGPT and has loaded the normal web composer.
+- Refresh the developer-mode app after updating the MCP server.
+- If ChatGPT changed its web markup, update the `#prompt-textarea` or send-button selector in `src/bridge/mcpServer.ts`.
 
 ### Tunnel is not visible in ChatGPT
 
