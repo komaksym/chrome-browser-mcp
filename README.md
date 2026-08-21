@@ -2,6 +2,8 @@
 
 A local bridge that lets a private ChatGPT developer-mode app inspect and control the tabs already open in your desktop Google Chrome.
 
+Current patch version: **0.1.1**. Every patch must bump this version; CI rejects patches that do not.
+
 The bridge exposes 17 MCP tools:
 
 - reads: `browser_status`, `list_tabs`, `get_active_tab`, `read_tab`, `read_tabs`, `search_tabs`
@@ -16,7 +18,7 @@ The bridge does **not** expose cookies, local storage, session storage, saved pa
 
 ## Proven path
 
-The end-to-end test launches a real Chromium process with the unpacked Manifest V3 extension, starts the real native-messaging host, connects an MCP client over Streamable HTTP, opens live pages, lists and reads them, and verifies that a password input value is not returned. Unit/integration coverage validates page actions, MCP routing, and ChatGPT child-agent tool registration/composition.
+The end-to-end test launches a real Chromium process with the unpacked Manifest V3 extension, starts the real native-messaging host, connects an MCP client over Streamable HTTP, opens live pages, lists and reads them, and verifies that a password input value is not returned. Unit/integration coverage validates page actions, MCP routing, ChatGPT child-agent tool registration/composition, and generated extension-version synchronization.
 
 ```text
 MCP client
@@ -77,7 +79,7 @@ This installs the native-host manifest at:
 ~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.komaksym.chrome_browser_mcp.json
 ```
 
-## 2. Load the Chrome extension
+## 2. Load the Chrome extension once
 
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
@@ -91,6 +93,10 @@ jlpddlfiallighiohmhhkemgbhofpnha
 
 Do not proceed if the ID differs. The native host only accepts that exact extension origin.
 
+**You only select the directory once.** For later patches, keep the same unpacked extension installed: update/rebuild the same local checkout, then click Chrome's **Update** button. The visible extension version must change for every patch; if it does not, you are still loading the old build.
+
+Chrome's **Update** button reloads files already present in that local `dist/extension` directory. It does not fetch GitHub or rebuild the Node MCP bridge by itself.
+
 ## 3. Verify the local browser chain
 
 Keep Chrome open, then run:
@@ -99,7 +105,14 @@ Keep Chrome open, then run:
 npm run verify:local
 ```
 
-A successful check prints the extension ID and the 17 advertised MCP tools.
+A successful check prints:
+
+- extension ID;
+- extension version;
+- MCP server version;
+- the 17 advertised MCP tools.
+
+The verifier fails if the extension and MCP versions differ, or if the bridge is old enough not to report its MCP version. This makes a stale 15-tool bridge immediately distinguishable from a stale Chrome extension.
 
 ## 4. Configure Secure MCP Tunnel
 
@@ -166,6 +179,7 @@ Read [`THREAT_MODEL.md`](THREAT_MODEL.md) and [`SECURITY_REVIEW.md`](SECURITY_RE
 
 ```bash
 npm ci
+npm run version:check
 npm run typecheck
 npm run lint
 npm test
