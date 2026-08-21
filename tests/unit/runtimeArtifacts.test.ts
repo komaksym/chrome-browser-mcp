@@ -1,7 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
-const runtimeArtifacts = ["dist/extension/manifest.json", "dist/extension/background.js", "dist/bridge/index.js"];
+const runtimeArtifacts = [
+  "dist/extension/manifest.json",
+  "dist/extension/background.js",
+  "dist/bridge/index.js",
+];
 
 describe("pulled runtime artifacts", () => {
   it("tracks the files Chrome and the native host execute", () => {
