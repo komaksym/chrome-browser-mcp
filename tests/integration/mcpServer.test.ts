@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -5,6 +6,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { startHttpMcpServer } from "../../src/bridge/mcpServer.js";
 import type { BrowserClient } from "../../src/bridge/browserClient.js";
 
+const packageVersion = (JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string })
+  .version;
 const servers: Array<{ close: (callback: () => void) => void }> = [];
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(resolve))));
@@ -75,6 +78,13 @@ describe("MCP HTTP server", () => {
     expect(tools.tools.slice(0, 6).every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
     expect(tools.tools.slice(6, 16).every((tool) => tool.annotations?.readOnlyHint === false)).toBe(true);
     expect(tools.tools[16]?.annotations?.readOnlyHint).toBe(true);
+
+    const status = await client.callTool({ name: "browser_status", arguments: {} });
+    expect(status.structuredContent).toMatchObject({
+      connected: true,
+      extensionVersion: "0.1.0",
+      mcpVersion: packageVersion,
+    });
 
     const listed = await client.callTool({ name: "list_tabs", arguments: {} });
     expect(listed.structuredContent).toEqual({ tabs: [{ tabId: 1, title: "Example" }], count: 1 });

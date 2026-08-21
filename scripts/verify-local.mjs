@@ -16,14 +16,22 @@ try {
     const tools = await client.listTools();
     const status = await client.callTool({ name: "browser_status", arguments: {} });
     const names = tools.tools.map((tool) => tool.name);
+    const extensionVersion = status.structuredContent.extensionVersion;
+    const mcpVersion = status.structuredContent.mcpVersion;
     console.log("Chrome Browser MCP is ready.");
     console.log(`Extension ID: ${status.structuredContent.extensionId}`);
+    console.log(`Extension version: ${extensionVersion ?? "unknown"}`);
+    console.log(`MCP version: ${mcpVersion ?? "unknown (stale bridge)"}`);
     console.log(`Tools (${names.length}): ${names.join(", ")}`);
+    if (!mcpVersion) throw new Error("MCP bridge is stale: it does not report its version");
+    if (extensionVersion !== mcpVersion) {
+      throw new Error(`Version mismatch: extension=${extensionVersion ?? "unknown"}, mcp=${mcpVersion}`);
+    }
   } finally {
     await client.close();
   }
 } catch (error) {
   console.error(`Local verification failed: ${error instanceof Error ? error.message : String(error)}`);
-  console.error("Open Chrome, enable the unpacked extension, and rerun npm run install:mac if the checkout moved.");
+  console.error("Rebuild/reinstall the local checkout, then click Update on the already-loaded Chrome extension.");
   process.exitCode = 1;
 }
