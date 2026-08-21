@@ -47,12 +47,14 @@ export function performPageAction(action: PageAction) {
     } catch {
       // Not a CSS selector; fall back to human-readable element names.
     }
-    if (selectorMatches.length === 1) return selectorMatches[0];
+    const selectorMatch = selectorMatches[0];
+    if (selectorMatches.length === 1 && selectorMatch) return selectorMatch;
     if (selectorMatches.length > 1) throw new Error(`AMBIGUOUS_TARGET: ${target}`);
 
     const wanted = normalize(target);
     const matches = interactive().filter((element) => names(element).includes(wanted));
-    if (matches.length === 1) return matches[0];
+    const match = matches[0];
+    if (matches.length === 1 && match) return match;
     if (matches.length > 1) throw new Error(`AMBIGUOUS_TARGET: ${target}`);
     throw new Error(`TARGET_NOT_FOUND: ${target}`);
   };
@@ -75,8 +77,8 @@ export function performPageAction(action: PageAction) {
     if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
       if (element.disabled || element.readOnly) throw new Error(`NOT_EDITABLE: ${action.target}`);
       const prototype = element instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
-      if (setter) setter.call(element, action.text);
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
+      if (descriptor?.set) descriptor.set.call(element, action.text);
       else element.value = action.text;
     } else if (element.isContentEditable) {
       element.textContent = action.text;
