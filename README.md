@@ -2,10 +2,13 @@
 
 A local bridge that lets a private ChatGPT developer-mode app inspect and control the tabs already open in your desktop Google Chrome.
 
-The bridge exposes 15 MCP tools:
+The bridge exposes 17 MCP tools:
 
 - reads: `browser_status`, `list_tabs`, `get_active_tab`, `read_tab`, `read_tabs`, `search_tabs`
 - actions: `click`, `type`, `fill_form`, `press_key`, `scroll`, `select_option`, `navigate`, `new_tab`, `close_tab`
+- ChatGPT child agents: `spawn_chatgpt_agent`, `read_chatgpt_agent`
+
+`spawn_chatgpt_agent` opens a new `chatgpt.com` tab in the background by default, submits exactly the user-provided prompt, and returns its tab ID. `read_chatgpt_agent` reads that child tab through the same bounded semantic extractor used for normal tabs; call it again later if the child is still generating.
 
 Action targets accept either a CSS selector or exact visible text / `aria-label` / placeholder / name / associated label text. Ambiguous targets fail instead of guessing.
 
@@ -13,7 +16,7 @@ The bridge does **not** expose cookies, local storage, session storage, saved pa
 
 ## Proven path
 
-The end-to-end test launches a real Chromium process with the unpacked Manifest V3 extension, starts the real native-messaging host, connects an MCP client over Streamable HTTP, opens live pages, lists and reads them, and verifies that a password input value is not returned. Unit/integration coverage validates page actions and MCP write-tool routing.
+The end-to-end test launches a real Chromium process with the unpacked Manifest V3 extension, starts the real native-messaging host, connects an MCP client over Streamable HTTP, opens live pages, lists and reads them, and verifies that a password input value is not returned. Unit/integration coverage validates page actions, MCP routing, and ChatGPT child-agent tool registration/composition.
 
 ```text
 MCP client
@@ -96,7 +99,7 @@ Keep Chrome open, then run:
 npm run verify:local
 ```
 
-A successful check prints the extension ID and the 15 advertised MCP tools.
+A successful check prints the extension ID and the 17 advertised MCP tools.
 
 ## 4. Configure Secure MCP Tunnel
 
@@ -126,7 +129,7 @@ Keep `tunnel-client run` active whenever ChatGPT needs the browser tools.
 4. Choose **Tunnel** as the connection type.
 5. Select or paste the tunnel ID.
 6. Use the metadata from [`app-metadata.json`](app-metadata.json).
-7. Confirm ChatGPT discovers all 15 tools.
+7. Confirm ChatGPT discovers all 17 tools.
 8. In a new chat, click **+ -> More**, select **Chrome Browser**, then ask: `List my open Chrome tabs.`
 
 See [`docs/CHATGPT_SETUP.md`](docs/CHATGPT_SETUP.md) for exact verification and troubleshooting.
@@ -155,6 +158,8 @@ Read [`THREAT_MODEL.md`](THREAT_MODEL.md) and [`SECURITY_REVIEW.md`](SECURITY_RE
 - Canvas-only applications and Chrome's built-in PDF viewer may return little semantic text.
 - The extractor returns the primary document's visible text, headings, links, and description, not raw HTML. URL credentials and fragments are removed, and sensitive query parameters are redacted.
 - `press_key` uses DOM keyboard events; Enter and Escape get explicit common-case behavior, but some sites require trusted OS/CDP keyboard input.
+- ChatGPT child-agent submission depends on ChatGPT's current web composer (`#prompt-textarea`) and send button markup; a future ChatGPT UI change can require updating those selectors.
+- `read_chatgpt_agent` returns the child tab's visible semantic page text, not a privileged ChatGPT API response.
 - File upload is intentionally not implemented because doing it generally would require a more powerful filesystem/debugger surface.
 
 ## Development
@@ -167,19 +172,3 @@ npm test
 npm run test:e2e
 npm audit
 ```
-
-The E2E test accepts:
-
-```bash
-CHROMIUM_PATH=/path/to/chromium \
-CHROME_NATIVE_HOST_DIR=/path/to/native-host-dir \
-npm run test:e2e
-```
-
-## Uninstall
-
-```bash
-npm run uninstall:mac
-```
-
-Then remove **Chrome Browser MCP** from `chrome://extensions` and remove the ChatGPT developer-mode app/tunnel profile separately.
