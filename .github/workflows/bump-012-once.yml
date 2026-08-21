@@ -1,0 +1,26 @@
+name: Bump 0.1.2 once
+on:
+  push:
+    branches: [fix/pull-updates-runtime-artifacts]
+permissions:
+  contents: write
+jobs:
+  bump:
+    if: github.repository == 'komaksym/chrome-browser-mcp'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/pull-updates-runtime-artifacts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm version 0.1.2 --no-git-tag-version
+      - name: Commit version bump and remove helper
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add package.json package-lock.json
+          git rm .github/workflows/bump-012-once.yml
+          git commit -m "chore: bump Chrome MCP to 0.1.2"
+          git push
