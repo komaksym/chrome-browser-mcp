@@ -1,6 +1,6 @@
 {
   "name": "chrome-browser-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "A local Chrome browser bridge for ChatGPT via MCP with user-directed read/write actions.",
