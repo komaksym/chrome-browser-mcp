@@ -12,13 +12,13 @@ Expected properties for this patch:
 
 - `connected: true`
 - extension ID `jlpddlfiallighiohmhhkemgbhofpnha`
-- extension version `0.1.1`
-- MCP version `0.1.1`
+- extension version `0.1.2`
+- MCP version `0.1.2`
 - 17 tools discovered
 
-If the extension and MCP versions differ, the local build is stale on one side. If the port is closed, open Chrome and check that the unpacked extension is enabled.
+If the extension and MCP versions differ, the local runtime is stale on one side. If the port is closed, open Chrome and check that the unpacked extension is enabled.
 
-After the extension has been loaded unpacked once, do not select its directory again for normal updates. Update/rebuild the same local checkout and click **Update** in `chrome://extensions`; the visible version must change on every patch.
+After the extension has been loaded unpacked once, do not select its directory again for normal updates. Published patches commit both runtime builds under `dist/`, so the normal update flow is `git pull`, then click **Update** in `chrome://extensions`. No separate build command or path selection is required just to consume a published patch.
 
 ## B. Create the OpenAI tunnel
 
@@ -104,7 +104,7 @@ Pass criteria:
 
 ### Extension updated but tools are still stale
 
-Run `npm run verify:local` and compare `Extension version`, `MCP version`, and `Tools`. Chrome's **Update** button reloads the already-built extension files; it does not rebuild the Node MCP bridge.
+Run `npm run verify:local` and compare `Extension version`, `MCP version`, and `Tools`. For published patches, `git pull` updates both `dist/extension` and `dist/bridge`; clicking Chrome's **Update** reloads the newly pulled extension/native-messaging runtime.
 
 ### Native host not found
 
