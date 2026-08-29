@@ -1,4 +1,4 @@
-export type BrowserMethod = "browser_status" | "list_tabs" | "get_active_tab" | "read_tab" | "read_tabs" | "search_tabs" | "capture_screenshot" | "upload_begin" | "upload_chunk" | "upload_commit" | "upload_abort" | "click" | "type" | "press_key" | "scroll" | "navigate" | "new_tab" | "close_tab" | "select_option";
+export type BrowserMethod = "browser_status" | "list_tabs" | "get_active_tab" | "read_tab" | "read_tabs" | "search_tabs" | "click" | "type" | "press_key" | "scroll" | "navigate" | "new_tab" | "close_tab" | "select_option";
 export interface NativeRequest {
     type: "request";
     id: string;

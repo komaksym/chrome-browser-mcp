@@ -2,21 +2,19 @@
 
 A local bridge that lets a private ChatGPT developer-mode app inspect and control the tabs already open in your desktop Google Chrome.
 
-Current patch version: **0.1.3**. Every patch must bump this version; CI rejects patches that do not.
+Current patch version: **0.1.2**. Every patch must bump this version; CI rejects patches that do not.
 
-The bridge exposes 19 MCP tools:
+The bridge exposes 17 MCP tools:
 
-- reads: `browser_status`, `list_tabs`, `get_active_tab`, `read_tab`, `read_tabs`, `search_tabs`, `screenshot_tab`
-- actions: `click`, `type`, `fill_form`, `upload_file`, `press_key`, `scroll`, `select_option`, `navigate`, `new_tab`, `close_tab`
+- reads: `browser_status`, `list_tabs`, `get_active_tab`, `read_tab`, `read_tabs`, `search_tabs`
+- actions: `click`, `type`, `fill_form`, `press_key`, `scroll`, `select_option`, `navigate`, `new_tab`, `close_tab`
 - ChatGPT child agents: `spawn_chatgpt_agent`, `read_chatgpt_agent`
 
 `spawn_chatgpt_agent` opens a new `chatgpt.com` tab in the background by default, submits exactly the user-provided prompt, and returns its tab ID. `read_chatgpt_agent` reads that child tab through the same bounded semantic extractor used for normal tabs; call it again later if the child is still generating.
 
 Action targets accept either a CSS selector or exact visible text / `aria-label` / placeholder / name / associated label text. Ambiguous targets fail instead of guessing.
 
-The bridge does **not** expose cookies, local storage, session storage, saved passwords, hidden input values, arbitrary JavaScript execution, generic filesystem reads, Chrome internal pages, or incognito tabs. It does not use the Chrome debugger API. `upload_file` can only read one explicitly named regular file directly inside `~/CodexUploads`; nested paths and symlink escapes are rejected.
-
-Screenshot capture requires Chrome's `<all_urls>` host permission because `captureVisibleTab` cannot run autonomously with only per-site host patterns. The MCP code still rejects every non-HTTP(S) or incognito target before capture/action, and no generic script/debugger tool is exposed.
+The bridge does **not** expose cookies, local storage, session storage, saved passwords, hidden input values, arbitrary JavaScript execution, Chrome internal pages, or incognito tabs. It does not use the Chrome debugger API.
 
 ## Proven path
 
@@ -109,7 +107,7 @@ Then open `chrome://extensions` and click **Update**. Do not select the extensio
 
 `git pull` updates both `dist/extension` (what Chrome loads) and `dist/bridge` (what the native host executes). Clicking **Update** reloads the unpacked extension/native-messaging connection so the newly pulled runtime is used.
 
-The visible extension version must change on every patch. For this patch it must show **0.1.3**. If it still shows an older version, the pulled runtime was not applied.
+The visible extension version must change on every patch. For this patch it must show **0.1.2**. If it still shows an older version, the pulled runtime was not applied.
 
 ## 3. Verify the local browser chain
 
@@ -124,7 +122,7 @@ A successful check prints:
 - extension ID;
 - extension version;
 - MCP server version;
-- the 19 advertised MCP tools.
+- the 17 advertised MCP tools.
 
 The verifier fails if the extension and MCP versions differ, or if the bridge is old enough not to report its MCP version. This makes a stale 15-tool bridge immediately distinguishable from a stale Chrome extension.
 
@@ -156,7 +154,7 @@ Keep `tunnel-client run` active whenever ChatGPT needs the browser tools.
 4. Choose **Tunnel** as the connection type.
 5. Select or paste the tunnel ID.
 6. Use the metadata from [`app-metadata.json`](app-metadata.json).
-7. Confirm ChatGPT discovers all 19 tools.
+7. Confirm ChatGPT discovers all 17 tools.
 8. In a new chat, click **+ -> More**, select **Chrome Browser**, then ask: `List my open Chrome tabs.`
 
 See [`docs/CHATGPT_SETUP.md`](docs/CHATGPT_SETUP.md) for exact verification and troubleshooting.
@@ -173,8 +171,6 @@ The extension intentionally requests access to all HTTP and HTTPS pages so it ca
 - the MCP endpoint binds only to `127.0.0.1`;
 - the tunnel is outbound-only;
 - actions are limited to normal HTTP(S) tabs and do not expose arbitrary JavaScript, debugger access, cookies, or browser storage;
-- screenshots are limited to validated normal HTTP(S) tabs and are returned as untrusted image content;
-- file upload accepts only a plain filename directly inside `~/CodexUploads`, resolves symlinks before containment checks, limits files to 10 MiB, and never returns file bytes to the model;
 - ambiguous human-readable targets are rejected rather than guessed.
 
 Read [`THREAT_MODEL.md`](THREAT_MODEL.md) and [`SECURITY_REVIEW.md`](SECURITY_REVIEW.md) before unattended use.
@@ -189,8 +185,7 @@ Read [`THREAT_MODEL.md`](THREAT_MODEL.md) and [`SECURITY_REVIEW.md`](SECURITY_RE
 - `press_key` uses DOM keyboard events; Enter and Escape get explicit common-case behavior, but some sites require trusted OS/CDP keyboard input.
 - ChatGPT child-agent submission depends on ChatGPT's current web composer (`#prompt-textarea`) and send button markup; a future ChatGPT UI change can require updating those selectors.
 - `read_chatgpt_agent` returns the child tab's visible semantic page text, not a privileged ChatGPT API response.
-- Screenshot capture covers only the visible viewport, not the full page.
-- File upload supports one file at a time from `~/CodexUploads` and relies on assigning a browser `FileList` to an HTML file input; sites with nonstandard/native upload flows may still require manual handling.
+- File upload is intentionally not implemented because doing it generally would require a more powerful filesystem/debugger surface.
 
 ## Development
 

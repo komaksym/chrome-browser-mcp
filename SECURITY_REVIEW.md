@@ -1,6 +1,6 @@
 # Security review
 
-Review scope: version 0.1.3, user-directed Chrome tab read/write, screenshot, and bounded upload access.
+Review scope: version 0.1.0, user-directed Chrome tab read/write access.
 
 ## Automated gates
 
@@ -10,7 +10,6 @@ Review scope: version 0.1.3, user-directed Chrome tab read/write, screenshot, an
 - Real Chromium/native-host/MCP E2E
 - Production dependency audit
 - Dangerous API scan: no `eval`, dynamic `Function`, cookies, debugger, browser storage, or arbitrary command execution in production source
-- Filesystem surface review: no generic read/list/write/delete tool; upload accepts only a plain filename from `~/CodexUploads`, rejects realpath escapes, and caps files at 10 MiB
 
 The repository CI runs these gates on `main`; a green CI run is required for release/use.
 
@@ -57,18 +56,7 @@ The repository CI runs these gates on `main`; a green CI run is required for rel
 
 7. **Write capability without a debugger surface**
    - Full CDP/`chrome.debugger` access would substantially increase privilege.
-   - Browser control uses the existing `tabs` and `scripting` permissions only; there is no arbitrary JavaScript MCP tool.
-
-8. **Visual observation without desktop control**
-   - `screenshot_tab` captures only the visible viewport of a validated normal HTTP(S), non-incognito tab.
-   - The target is activated and checked before and after capture so the MCP does not intentionally expose Chrome internal pages or another tab.
-   - Chrome requires `<all_urls>` for unattended `captureVisibleTab`; this broad extension permission is narrowed at the MCP runtime by the existing HTTP(S)/non-incognito validation and absence of arbitrary scripting/debugger tools.
-
-9. **Bounded file upload instead of filesystem access**
-   - `upload_file` accepts only a plain filename directly inside `~/CodexUploads`.
-   - The native host resolves the directory and candidate with `realpath`, requires the resolved parent to equal the approved directory, accepts only regular files, and caps size at 10 MiB.
-   - Native-message chunks stay below Chrome's host-to-extension 1 MiB message limit.
-   - File bytes are delivered to the selected HTML file input and never returned to the MCP caller.
+   - Browser control uses the existing `tabs` and `scripting` permissions only; there is no arbitrary JavaScript MCP tool or file upload surface.
 
 ## Residual risks
 
@@ -77,10 +65,8 @@ The repository CI runs these gates on `main`; a green CI run is required for rel
 - Prompt-injection handling relies partly on correct model treatment of untrusted tool output.
 - Clicks, Enter presses, navigation, and tab closing can have remote or destructive side effects when a user asks for them.
 - DOM keyboard events are not equivalent to trusted OS/CDP keyboard input on every site.
-- Programmatic `FileList` assignment can fail on sites with nonstandard/native upload widgets.
-- A permitted file can still be disclosed if the agent uploads it to the wrong destination.
 - A fixed port means only one active native host/profile is supported.
 
 ## Decision
 
-Approved for personal, local, user-directed browser automation after CI is green, including screenshots and uploads from the bounded `~/CodexUploads` directory. Not approved for arbitrary JavaScript execution, general filesystem access, or full-computer control.
+Approved for personal, local, user-directed browser automation after CI is green. Not approved for unattended autonomous operation, arbitrary JavaScript execution, filesystem access, or full-computer control.

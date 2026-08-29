@@ -5,10 +5,9 @@
 - Titles, URLs, and visible text from open Chrome tabs.
 - Authenticated page content visible in the user's normal Chrome profile.
 - The ability to enumerate which sites are open.
-- User-authorized control of normal HTTP(S) tabs: screenshotting the visible viewport, clicking, typing, selecting, scrolling, navigation, opening, and closing tabs.
-- User-authorized attachment of one explicitly named regular file directly inside `~/CodexUploads` to an HTML file input.
+- User-authorized control of normal HTTP(S) tabs: clicking, typing, selecting, scrolling, navigation, opening, and closing tabs.
 
-The bridge does not intentionally expose cookies, browser storage, password-manager data, hidden input values, browsing history, downloads, bookmarks, incognito tabs, arbitrary JavaScript execution, generic filesystem reads, or Chrome debugger access.
+The bridge does not intentionally expose cookies, browser storage, password-manager data, hidden input values, browsing history, downloads, bookmarks, incognito tabs, arbitrary JavaScript execution, or Chrome debugger access.
 
 ## Trust boundaries
 
@@ -46,28 +45,9 @@ Controls:
 - URL usernames/passwords and fragments are removed, and sensitive query keys are redacted in returned metadata;
 - incognito is excluded;
 - non-HTTP(S) schemes are rejected;
-- output size is bounded;
-- screenshot requests validate the target as a normal HTTP(S), non-incognito tab before capture and verify it stayed active across the capture.
-- Chrome's `captureVisibleTab` requires the extension-level `<all_urls>` host permission for unattended capture; runtime guards still reject non-HTTP(S), incognito, and restricted targets before the capability is used.
+- output size is bounded.
 
-Residual risk: visible page text and screenshot pixels can themselves be sensitive. The user must treat enabling this app as granting ChatGPT read access and user-directed control over normal open HTTP(S) tabs.
-
-### Restricted file upload
-
-Threat: the model tries to read or upload an arbitrary local file, escape the approved directory, follow a symlink outside it, or send an approved document to the wrong site.
-
-Controls:
-
-- the MCP tool accepts only a plain filename, never an arbitrary path;
-- the native host reads only files directly inside `~/CodexUploads`;
-- the resolved real path must remain directly under that directory, so symlink escapes are rejected;
-- only regular files are accepted;
-- files are limited to 10 MiB;
-- bytes are sent only to the targeted HTML file input and are not returned in MCP output;
-- no general filesystem read/list/delete/write tool is exposed;
-- upload uses ordinary page/extension primitives and does not add Chrome debugger access.
-
-Residual risk: uploading a permitted file to the wrong website is still a data disclosure. The browser agent must keep the destination and user-requested task in scope.
+Residual risk: visible page text can itself be sensitive. The user must treat enabling this app as granting ChatGPT read access and user-directed control over normal open HTTP(S) tabs.
 
 ### Unintended browser side effects
 
@@ -118,4 +98,4 @@ Controls:
 - Extracting content from cross-origin frames, Chrome internal pages, or DRM/canvas surfaces.
 - Supporting multiple simultaneous Chrome profiles on one fixed port.
 - Unattended autonomous browser operation.
-- Arbitrary filesystem access or arbitrary OS/computer control.
+- File upload or arbitrary OS/computer control.

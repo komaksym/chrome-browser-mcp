@@ -21,9 +21,7 @@ const manifest = {
   key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsN2PDxGGdi4kzCaNghCrqsG9k12qKj5zfmHsfJ2Aa4AnRSbAie0jy2nqwJtgEKxsZmWRff10BG5Br1GXBKY2NRIPZaIx5u2GO206nJIq8q2mvxbdRGiiPJiX0gskVGB/lLOGo3rg+AjELyUhm6yU9R27dnoOrMqjWM3GXy3UEa4ZfLm61Cli9u46liHLfCowr1AQm2+g2qaGdHBkBriPg/HqhgUYdIhFOepdiHS30BOm/OIy7U3mcQj0+NLmlACQHLqFFgUpQnhjj2pDOX9rzLvTDLBCtUzYPdK6CakDMsBEHrVyX3P1VWpodeH5RREp6Vr/5nRR78L+5n8L1GdLAwIDAQAB",
   minimum_chrome_version: "120",
   permissions: ["tabs", "scripting", "nativeMessaging"],
-  // Chrome requires <all_urls> (or a transient activeTab grant) for captureVisibleTab.
-  // The MCP runtime still rejects every non-HTTP(S) and incognito target before any read/action/screenshot.
-  host_permissions: ["<all_urls>"],
+  host_permissions: ["http://*/*", "https://*/*"],
   background: { service_worker: "background.js", type: "module" },
   action: { default_title: "Chrome Browser MCP" }
 };
