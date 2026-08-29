@@ -21,6 +21,13 @@ describe("MCP HTTP server", () => {
       request: (method: string, args: Record<string, unknown> = {}) => {
         requests.push({ method, args });
         if (method === "list_tabs") return Promise.resolve({ tabs: [{ tabId: 1, title: "Example" }], count: 1 });
+        if (method === "capture_screenshot") {
+          return Promise.resolve({
+            tab: { tabId: 1, title: "Example", url: "https://example.com/" },
+            image: { mimeType: "image/png", data: "iVBORw0KGgo=" },
+            security: { contentIsUntrusted: true, warning: "untrusted screenshot" },
+          });
+        }
         if (method === "new_tab") {
           return Promise.resolve({
             tab: {
@@ -63,9 +70,11 @@ describe("MCP HTTP server", () => {
       "read_tab",
       "read_tabs",
       "search_tabs",
+      "screenshot_tab",
       "click",
       "type",
       "fill_form",
+      "upload_file",
       "press_key",
       "scroll",
       "select_option",
@@ -75,9 +84,13 @@ describe("MCP HTTP server", () => {
       "spawn_chatgpt_agent",
       "read_chatgpt_agent",
     ]);
-    expect(tools.tools.slice(0, 6).every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
-    expect(tools.tools.slice(6, 16).every((tool) => tool.annotations?.readOnlyHint === false)).toBe(true);
-    expect(tools.tools[16]?.annotations?.readOnlyHint).toBe(true);
+    const annotations = new Map(tools.tools.map((tool) => [tool.name, tool.annotations]));
+    for (const name of ["browser_status", "list_tabs", "get_active_tab", "read_tab", "read_tabs", "search_tabs", "screenshot_tab", "read_chatgpt_agent"]) {
+      expect(annotations.get(name)?.readOnlyHint, name).toBe(true);
+    }
+    for (const name of ["click", "type", "fill_form", "upload_file", "press_key", "scroll", "select_option", "navigate", "new_tab", "close_tab", "spawn_chatgpt_agent"]) {
+      expect(annotations.get(name)?.readOnlyHint, name).toBe(false);
+    }
 
     const status = await client.callTool({ name: "browser_status", arguments: {} });
     expect(status.structuredContent).toMatchObject({
@@ -88,6 +101,19 @@ describe("MCP HTTP server", () => {
 
     const listed = await client.callTool({ name: "list_tabs", arguments: {} });
     expect(listed.structuredContent).toEqual({ tabs: [{ tabId: 1, title: "Example" }], count: 1 });
+
+    const screenshot = await client.callTool({ name: "screenshot_tab", arguments: { tabId: 1 } });
+    expect(screenshot.structuredContent).toMatchObject({
+      tab: { tabId: 1 },
+      mimeType: "image/png",
+      security: { contentIsUntrusted: true },
+    });
+    expect(screenshot.content).toContainEqual({
+      type: "image",
+      data: "iVBORw0KGgo=",
+      mimeType: "image/png",
+    });
+    expect(requests).toContainEqual({ method: "capture_screenshot", args: { tabId: 1 } });
 
     const clicked = await client.callTool({ name: "click", arguments: { tabId: 1, target: "Apply" } });
     expect(clicked.structuredContent).toEqual({ method: "click", args: { tabId: 1, target: "Apply" } });

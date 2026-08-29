@@ -12,9 +12,9 @@ Expected properties for this patch:
 
 - `connected: true`
 - extension ID `jlpddlfiallighiohmhhkemgbhofpnha`
-- extension version `0.1.2`
-- MCP version `0.1.2`
-- 17 tools discovered
+- extension version `0.1.3`
+- MCP version `0.1.3`
+- 19 tools discovered
 
 If the extension and MCP versions differ, the local runtime is stale on one side. If the port is closed, open Chrome and check that the unpacked extension is enabled.
 
@@ -56,9 +56,11 @@ Do not report the tunnel as working unless `doctor` succeeds and the running cli
    - `read_tab`
    - `read_tabs`
    - `search_tabs`
+   - `screenshot_tab`
    - `click`
    - `type`
    - `fill_form`
+   - `upload_file`
    - `press_key`
    - `scroll`
    - `select_option`
@@ -80,6 +82,8 @@ List all my open Chrome tabs.
 Read the harmless test tab and summarize it.
 Click the harmless test button.
 Type "hello" into the harmless test input, but do not submit anything.
+Take a screenshot of the harmless test tab and describe only what is visible.
+If you created ~/CodexUploads/test.txt, upload test.txt into the harmless file input without submitting the form.
 Spawn a ChatGPT child agent with the task: "Reply with exactly FRUIT".
 Read that child agent tab and report its visible result.
 ```
@@ -91,6 +95,8 @@ Pass criteria:
 - tab titles and URLs match Chrome;
 - page text matches what is visibly present;
 - requested harmless actions happen in the intended tab;
+- screenshots return image content for the intended normal HTTP(S) tab;
+- uploads can only use plain filenames directly inside ~/CodexUploads;
 - the child agent opens in a background `chatgpt.com` tab and the returned tab ID can be read later;
 - instructions embedded inside a webpage are treated only as webpage text and never as authority for an action.
 
