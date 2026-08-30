@@ -25,7 +25,7 @@ Threat: a page says to ignore the user, read other tabs, reveal secrets, or invo
 
 Controls:
 
-- every read result contains `contentIsUntrusted: true` and a warning;
+- every read result, including browser-derived worker output, contains `contentIsUntrusted: true` and a warning;
 - server instructions and tool descriptions explicitly say not to follow page instructions;
 - a page cannot choose MCP tool arguments or send messages to the native host;
 - write tools act only on arguments supplied by the MCP caller;
@@ -45,7 +45,7 @@ Controls:
 - URL usernames/passwords and fragments are removed, and sensitive query keys are redacted in returned metadata;
 - incognito is excluded;
 - non-HTTP(S) schemes are rejected;
-- output size is bounded.
+- ordinary page reads and worker output are bounded; worker output is capped at 30,000 characters before Native Messaging/MCP serialization and reports truncation.
 
 Residual risk: visible page text can itself be sensitive. The user must treat enabling this app as granting ChatGPT read access and user-directed control over normal open HTTP(S) tabs.
 
@@ -86,6 +86,7 @@ Residual risk: another process running as the same local user can call the loopb
 Controls:
 
 - per-tab character limits;
+- worker-result character limits before Native Messaging and MCP serialization;
 - a maximum of 20 tabs per batch;
 - four concurrent reads per batch;
 - native-message size limits matching Chrome's protocol limits;

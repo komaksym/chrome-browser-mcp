@@ -153,11 +153,36 @@ function runChatGptWorkerCommand(command) {
   const userMessageSelector = '[data-message-author-role="user"]';
   const assistantMessageSelector = '[data-message-author-role="assistant"]';
   const generatingSelector = 'button[data-testid="stop-button"], button[aria-label*="Stop generating"], button[aria-label="Stop"]';
+  const maxAssistantCharacters = 3e4;
+  const maxUserCharacters = 11e4;
+  const truncationNotice = "\n\n[Worker output truncated for safety]\n\n";
+  const completionMarkerTailCharacters = 1024;
   const exactMessageText = (element) => {
     if (!element) return null;
-    const body = element.querySelector(".markdown, [data-message-content]") ?? element;
-    const html = body;
-    return typeof html.innerText === "string" ? html.innerText : body.textContent ?? "";
+    const contentSelector = ".markdown, [data-message-content]";
+    const candidates = [
+      ...element.matches(contentSelector) ? [element] : [],
+      ...Array.from(element.querySelectorAll(contentSelector))
+    ];
+    const blocks = candidates.filter((candidate) => !candidates.some((other) => other !== candidate && other.contains(candidate)));
+    const textBlocks = blocks.length > 0 ? blocks : [element];
+    return textBlocks.map((block) => {
+      const html = block;
+      return typeof html.innerText === "string" ? html.innerText : block.textContent ?? "";
+    }).join("\n\n");
+  };
+  const boundedAssistantText = (text) => {
+    if (text === null || text.length <= maxAssistantCharacters) return { text, truncated: false };
+    const suffixLength = Math.min(completionMarkerTailCharacters, maxAssistantCharacters - truncationNotice.length);
+    const prefixLength = maxAssistantCharacters - truncationNotice.length - suffixLength;
+    return {
+      text: `${text.slice(0, prefixLength)}${truncationNotice}${text.slice(-suffixLength)}`,
+      truncated: true
+    };
+  };
+  const boundedUserText = (text) => {
+    if (text === null || text.length <= maxUserCharacters) return { text, truncated: false };
+    return { text: text.slice(0, maxUserCharacters), truncated: true };
   };
   const composer = document.querySelector(composerSelector);
   const ready = composer instanceof HTMLElement && !("disabled" in composer && Boolean(composer.disabled)) && !("readOnly" in composer && Boolean(composer.readOnly));
@@ -188,11 +213,15 @@ function runChatGptWorkerCommand(command) {
   }
   const userMessages = Array.from(document.querySelectorAll(userMessageSelector));
   const assistantMessages = Array.from(document.querySelectorAll(assistantMessageSelector));
+  const user = boundedUserText(exactMessageText(userMessages.at(-1)));
+  const assistant = boundedAssistantText(exactMessageText(assistantMessages.at(-1)));
   return {
     ready,
     generating: document.querySelector(generatingSelector) !== null,
-    latestUserText: exactMessageText(userMessages.at(-1)),
-    latestAssistantText: exactMessageText(assistantMessages.at(-1))
+    latestUserText: user.text,
+    latestUserTruncated: user.truncated,
+    latestAssistantText: assistant.text,
+    latestAssistantTruncated: assistant.truncated
   };
 }
 
@@ -203,6 +232,9 @@ var nativePort = null;
 var reconnectTimer = null;
 var reconnectDelay = 500;
 var SENSITIVE_QUERY_KEY = /(?:access[_-]?token|token|auth|authorization|api[_-]?key|secret|session|code|sig|signature|jwt|credential|password)/i;
+function resolveTabUrl(tab) {
+  return tab.url || tab.pendingUrl || "";
+}
 function sanitizeUrl(rawUrl) {
   try {
     const url = new URL(rawUrl);
@@ -218,7 +250,7 @@ function sanitizeUrl(rawUrl) {
   }
 }
 function serializeTab(tab) {
-  const rawUrl = tab.url ?? tab.pendingUrl ?? "";
+  const rawUrl = resolveTabUrl(tab);
   return {
     tabId: tab.id ?? -1,
     windowId: tab.windowId,
@@ -234,8 +266,8 @@ function serializeTab(tab) {
 }
 function assertReadableTab(tab) {
   if (tab.id === void 0) throw new Error("TAB_NOT_FOUND: Tab has no ID");
-  const url = tab.url ?? tab.pendingUrl ?? "";
-  if (!url) throw new Error("UNREADABLE_PAGE: Tab has no committed URL");
+  const url = resolveTabUrl(tab);
+  if (!url) throw new Error("UNREADABLE_PAGE: Tab has no URL");
   const parsed = new URL(url);
   if (RESTRICTED_SCHEMES.includes(parsed.protocol) || !["http:", "https:"].includes(parsed.protocol)) {
     throw new Error(`RESTRICTED_PAGE: Cannot access ${parsed.protocol} pages`);
@@ -281,8 +313,12 @@ async function readTab(tabId, offset, maxCharacters, includeLinks) {
 async function runChatGptWorker(tabId, command) {
   const tab = await chrome.tabs.get(tabId);
   assertReadableTab(tab);
-  if (new URL(tab.url).hostname !== "chatgpt.com") {
+  const url = resolveTabUrl(tab);
+  if (new URL(url).hostname !== "chatgpt.com") {
     throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
+  }
+  if (!tab.url || tab.status === "loading") {
+    throw new Error("NAVIGATION_IN_PROGRESS: ChatGPT worker tab is still navigating");
   }
   const injection = await chrome.scripting.executeScript({
     target: { tabId, frameIds: [0] },

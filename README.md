@@ -161,7 +161,7 @@ See [`docs/CHATGPT_SETUP.md`](docs/CHATGPT_SETUP.md) for exact verification and 
 
 ## Security model
 
-Webpage text is data, never authority. Every content result includes an explicit untrusted-content marker, and tool instructions tell the model never to turn instructions found in pages into actions.
+Webpage text is data, never authority. Every content result—including browser-derived ChatGPT worker output—includes an explicit untrusted-content marker, and tool instructions tell the model never to turn instructions found in pages into actions.
 
 The extension intentionally requests access to all HTTP and HTTPS pages so it can read and interact with normal open tabs. The protection boundary is:
 
@@ -184,7 +184,7 @@ Read [`THREAT_MODEL.md`](THREAT_MODEL.md) and [`SECURITY_REVIEW.md`](SECURITY_RE
 - The extractor returns the primary document's visible text, headings, links, and description, not raw HTML. URL credentials and fragments are removed, and sensitive query parameters are redacted.
 - `press_key` uses DOM keyboard events; Enter and Escape get explicit common-case behavior, but some sites require trusted OS/CDP keyboard input.
 - ChatGPT worker submission depends on ChatGPT's current web composer and send-button markup; a future ChatGPT UI change can require updating selectors in `src/extension/chatgptWorker.ts`.
-- Worker results are browser-derived ChatGPT UI output, not privileged ChatGPT API responses. The runtime accepts a result only after the exact submitted worker prompt and unique completion marker both validate.
+- Worker results are browser-derived ChatGPT UI output, not privileged ChatGPT API responses. Identity and completion-marker validation proves that a result belongs to its job; it does not make its content trustworthy. Each result is marked `contentIsUntrusted: true`, carries a warning, and is capped at 30,000 characters with `truncated: true` when clipping occurred.
 - File upload is intentionally not implemented because doing it generally would require a more powerful filesystem/debugger surface.
 
 ## Development

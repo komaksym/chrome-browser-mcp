@@ -11,6 +11,7 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(resolve))));
 });
 
+/** Connects an MCP test client to a temporary loopback server backed by the supplied fake browser. */
 async function connect(fakeBrowser: BrowserClient) {
   const httpServer = await startHttpMcpServer(fakeBrowser, 0);
   servers.push(httpServer);
@@ -20,6 +21,7 @@ async function connect(fakeBrowser: BrowserClient) {
   return client;
 }
 
+/** Extracts the generated completion marker from the runtime's submitted worker prompt. */
 function completionMarker(prompt: string): string {
   const marker = prompt.match(/<<<SUBAGENT_DONE:[0-9a-f-]+>>>/i)?.[0];
   if (!marker) throw new Error(`Missing completion marker in prompt: ${prompt}`);
@@ -150,11 +152,17 @@ describe("MCP HTTP server", () => {
         {
           agent_id: "architecture",
           state: "VERIFIED_DONE",
-          result: { type: "text", text: "First answer" },
+          result: {
+            type: "text",
+            text: "First answer",
+            contentIsUntrusted: true,
+            truncated: false,
+          },
         },
       ],
       failed: [],
     });
+    expect(JSON.stringify(firstCollect.structuredContent)).toContain("untrusted");
     expect(JSON.stringify(firstCollect.structuredContent)).not.toMatch(/tab_?id/i);
     expect(requests.filter((request) => request.method === "new_tab")).toHaveLength(2);
 
@@ -175,12 +183,18 @@ describe("MCP HTTP server", () => {
         {
           agent_id: "security",
           state: "VERIFIED_DONE",
-          result: { type: "text", text: "Second answer" },
+          result: {
+            type: "text",
+            text: "Second answer",
+            contentIsUntrusted: true,
+            truncated: false,
+          },
         },
       ],
       failed: [],
       pending: [],
     });
+    expect(JSON.stringify(secondCollect.structuredContent)).toContain("untrusted");
     await client.close();
   });
   it("retries transient worker submission failures but surfaces terminal failures", async () => {
@@ -519,6 +533,73 @@ describe("MCP HTTP server", () => {
       }],
     });
     expect(submitCalls).toBe(2);
+    await client.close();
+  });
+
+  it("keeps runtime-owned worker tabs private from generic browser tools", async () => {
+    const requests: Array<{ method: string; args: Record<string, unknown> }> = [];
+    let submittedPrompt = "";
+    const fakeBrowser = {
+      status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        requests.push({ method, args });
+        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 701 } });
+        if (method === "chatgpt_worker_submit") {
+          submittedPrompt = args.prompt as string;
+          return Promise.resolve({ submitted: true });
+        }
+        if (method === "list_tabs") {
+          return Promise.resolve({
+            tabs: [
+              { tabId: 1, title: "Public", url: "https://example.com" },
+              { tabId: 701, title: "ChatGPT worker", url: "https://chatgpt.com" },
+            ],
+            count: 2,
+          });
+        }
+        if (method === "get_active_tab") return Promise.resolve({ tab: { tabId: 701 } });
+        if (method === "read_tab") return Promise.resolve({ tab: { tabId: args.tabId }, page: { text: "public" } });
+        if (method === "close_tab") return Promise.resolve({ closed: true });
+        if (method === "read_chatgpt_worker") {
+          return Promise.resolve({
+            ready: true,
+            generating: true,
+            latestUserText: submittedPrompt,
+            latestAssistantText: null,
+            latestAssistantTruncated: false,
+          });
+        }
+        return Promise.resolve({});
+      },
+    } as BrowserClient;
+    const client = await connect(fakeBrowser);
+
+    await client.callTool({
+      name: "spawn_agents",
+      arguments: { tasks: [{ agent_id: "private", prompt: "stay private" }], max_concurrency: 1 },
+    });
+    const listed = await client.callTool({ name: "list_tabs", arguments: {} });
+
+    expect(listed.structuredContent).toEqual({
+      tabs: [{ tabId: 1, title: "Public", url: "https://example.com" }],
+      count: 1,
+    });
+    const workerRead = await client.callTool({ name: "read_tab", arguments: { tabId: 701 } });
+    const workerBatchRead = await client.callTool({ name: "read_tabs", arguments: { tabIds: [1, 701] } });
+    const workerClose = await client.callTool({ name: "close_tab", arguments: { tabId: 701 } });
+    const activeWorker = await client.callTool({ name: "get_active_tab", arguments: {} });
+
+    for (const result of [workerRead, workerBatchRead, workerClose, activeWorker]) {
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("WORKER_TAB_PRIVATE");
+    }
+    expect(requests.filter((request) => ["read_tab", "close_tab"].includes(request.method))).toEqual([]);
+
+    const publicRead = await client.callTool({ name: "read_tab", arguments: { tabId: 1 } });
+    expect(publicRead.structuredContent).toEqual({ tab: { tabId: 1 }, page: { text: "public" } });
+    expect(requests.filter((request) => request.method === "read_tab")).toEqual([
+      { method: "read_tab", args: { tabId: 1, offset: 0, maxCharacters: 30_000, includeLinks: true } },
+    ]);
     await client.close();
   });
 
