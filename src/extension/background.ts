@@ -1,5 +1,6 @@
 import { performPageAction, type PageAction } from "./actions.js";
 import { extractPage } from "./extractor.js";
+import { runChatGptWorkerCommand, type ChatGptWorkerCommand } from "./chatgptWorker.js";
 
 type BrowserMethod =
   | "browser_status"
@@ -15,7 +16,9 @@ type BrowserMethod =
   | "navigate"
   | "new_tab"
   | "close_tab"
-  | "select_option";
+  | "select_option"
+  | "chatgpt_worker_submit"
+  | "read_chatgpt_worker";
 
 interface NativeRequest {
   type: "request";
@@ -114,6 +117,23 @@ async function readTab(tabId: number, offset: number, maxCharacters: number, inc
   };
 }
 
+async function runChatGptWorker(tabId: number, command: ChatGptWorkerCommand) {
+  const tab = await chrome.tabs.get(tabId);
+  assertReadableTab(tab);
+  if (new URL(tab.url).hostname !== "chatgpt.com") {
+    throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
+  }
+  const injection = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [0] },
+    func: runChatGptWorkerCommand,
+    args: [command],
+    world: "ISOLATED",
+  });
+  const result = injection[0]?.result;
+  if (!result) throw new Error("EXTRACTION_FAILED: No ChatGPT worker result returned");
+  return result;
+}
+
 async function runPageAction(tabId: number, action: PageAction) {
   const tab = await chrome.tabs.get(tabId);
   assertReadableTab(tab);
@@ -196,6 +216,13 @@ async function execute(method: BrowserMethod, params: Record<string, unknown>): 
       const matches = tabs.filter((tab) => `${tab.title}\n${tab.url}`.toLocaleLowerCase().includes(query)).slice(0, maxResults);
       return { query, tabs: matches, count: matches.length };
     }
+    case "chatgpt_worker_submit":
+      return runChatGptWorker(numberParam(params, "tabId", -1), {
+        action: "submit",
+        prompt: stringParam(params, "prompt"),
+      });
+    case "read_chatgpt_worker":
+      return runChatGptWorker(numberParam(params, "tabId", -1), { action: "read" });
     case "click":
       return runPageAction(numberParam(params, "tabId", -1), { action: "click", target: stringParam(params, "target") });
     case "type":
