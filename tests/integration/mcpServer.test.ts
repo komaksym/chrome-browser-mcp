@@ -57,6 +57,12 @@ describe("MCP HTTP server", () => {
     ]);
     expect(tools.tools.some((tool) => tool.name === "spawn_chatgpt_agent")).toBe(false);
     expect(tools.tools.some((tool) => tool.name === "read_chatgpt_agent")).toBe(false);
+    const collectTool = tools.tools.find((tool) => tool.name === "collect_agents");
+    expect(collectTool?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: true,
+    });
     await client.close();
   });
 
@@ -428,6 +434,91 @@ describe("MCP HTTP server", () => {
       }],
       pending: [],
     });
+    await client.close();
+  });
+
+
+  it("does not duplicate-submit when submission succeeds but its acknowledgement is lost", async () => {
+    let submitCalls = 0;
+    let readCalls = 0;
+    let submittedPrompt = "";
+    const fakeBrowser = {
+      status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 121 } });
+        if (method === "chatgpt_worker_submit") {
+          submitCalls += 1;
+          submittedPrompt = args.prompt as string;
+          if (submitCalls === 1) {
+            return Promise.reject(new Error("TIMEOUT: acknowledgement was lost"));
+          }
+          return Promise.resolve({ submitted: true });
+        }
+        if (method === "read_chatgpt_worker") {
+          readCalls += 1;
+          return Promise.resolve({
+            ready: true,
+            generating: true,
+            latestUserText: submittedPrompt,
+            latestAssistantText: null,
+          });
+        }
+        if (method === "close_tab") return Promise.resolve({ closed: true });
+        return Promise.resolve({});
+      },
+    } as BrowserClient;
+    const client = await connect(fakeBrowser);
+
+    const spawned = await client.callTool({
+      name: "spawn_agents",
+      arguments: { tasks: [{ agent_id: "idempotent", prompt: "work" }], max_concurrency: 1 },
+    });
+
+    expect(spawned.structuredContent).toMatchObject({
+      state: "RUNNING",
+      jobs: [{ agent_id: "idempotent", state: "DISPATCHED" }],
+    });
+    expect(submitCalls).toBe(1);
+    expect(readCalls).toBe(1);
+    await client.close();
+  });
+
+  it("fails terminally when a worker tab disappears during submission retry", async () => {
+    let submitCalls = 0;
+    const fakeBrowser = {
+      status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
+      request: (method: string) => {
+        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 131 } });
+        if (method === "chatgpt_worker_submit") {
+          submitCalls += 1;
+          if (submitCalls === 1) {
+            return Promise.reject(new Error("CHATGPT_NOT_READY: composer is mounting"));
+          }
+          return Promise.reject(new Error("TAB_NOT_FOUND: worker tab closed"));
+        }
+        if (method === "read_chatgpt_worker") {
+          return Promise.reject(new Error("TAB_NOT_FOUND: worker tab closed"));
+        }
+        if (method === "close_tab") return Promise.resolve({ closed: true });
+        return Promise.resolve({});
+      },
+    } as BrowserClient;
+    const client = await connect(fakeBrowser);
+
+    const spawned = await client.callTool({
+      name: "spawn_agents",
+      arguments: { tasks: [{ agent_id: "closed", prompt: "work" }], max_concurrency: 1 },
+    });
+
+    expect(spawned.structuredContent).toMatchObject({
+      state: "FAILED",
+      jobs: [{
+        agent_id: "closed",
+        state: "FAILED_TERMINAL",
+        error: { code: "TAB_NOT_FOUND", retryable: false },
+      }],
+    });
+    expect(submitCalls).toBe(2);
     await client.close();
   });
 
