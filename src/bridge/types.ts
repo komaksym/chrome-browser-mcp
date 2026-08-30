@@ -12,7 +12,9 @@ export type BrowserMethod =
   | "navigate"
   | "new_tab"
   | "close_tab"
-  | "select_option";
+  | "select_option"
+  | "chatgpt_worker_submit"
+  | "read_chatgpt_worker";
 
 export interface NativeRequest {
   type: "request";
