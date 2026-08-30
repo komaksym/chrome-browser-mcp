@@ -240,4 +240,195 @@ describe("MCP HTTP server", () => {
     await terminalClient.close();
   });
 
+
+  it("retries transient collection failures without leaking concurrency slots", async () => {
+    let nextTabId = 101;
+    let readAttempts = 0;
+    let openedTabs = 0;
+    let submittedPrompt = "";
+    const fakeBrowser = {
+      status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "new_tab") {
+          openedTabs += 1;
+          return Promise.resolve({ tab: { tabId: nextTabId++ } });
+        }
+        if (method === "chatgpt_worker_submit") {
+          submittedPrompt = args.prompt as string;
+          return Promise.resolve({ submitted: true });
+        }
+        if (method === "read_chatgpt_worker") {
+          readAttempts += 1;
+          if (readAttempts === 1) {
+            return Promise.reject(new Error("EXTRACTION_FAILED: temporary read failure"));
+          }
+          return Promise.resolve({
+            ready: true,
+            generating: false,
+            latestUserText: submittedPrompt,
+            latestAssistantText: `Recovered answer\n${completionMarker(submittedPrompt)}`,
+          });
+        }
+        if (method === "close_tab") return Promise.resolve({ closed: true });
+        return Promise.resolve({});
+      },
+    } as BrowserClient;
+    const client = await connect(fakeBrowser);
+
+    const spawned = await client.callTool({
+      name: "spawn_agents",
+      arguments: { tasks: [{ agent_id: "recover", prompt: "work" }], max_concurrency: 1 },
+    });
+    const runId = (spawned.structuredContent as Record<string, unknown>).run_id as string;
+
+    const firstCollect = await client.callTool({
+      name: "collect_agents",
+      arguments: { run_id: runId },
+    });
+    expect(firstCollect.structuredContent).toMatchObject({
+      state: "RUNNING",
+      failed: [{
+        agent_id: "recover",
+        state: "FAILED_TRANSIENT",
+        error: { code: "EXTRACTION_FAILED", retryable: true },
+      }],
+    });
+    expect(openedTabs).toBe(1);
+
+    const secondCollect = await client.callTool({
+      name: "collect_agents",
+      arguments: { run_id: runId },
+    });
+    expect(secondCollect.structuredContent).toMatchObject({
+      state: "COMPLETE",
+      barrier: { satisfied: true },
+      results: [{
+        agent_id: "recover",
+        state: "VERIFIED_DONE",
+        result: { type: "text", text: "Recovered answer" },
+      }],
+      failed: [],
+      pending: [],
+    });
+    expect(openedTabs).toBe(1);
+    await client.close();
+  });
+
+  it("turns repeated transient collection failures terminal after a bounded retry budget", async () => {
+    let submittedPrompt = "";
+    let closeCalls = 0;
+    const fakeBrowser = {
+      status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 111 } });
+        if (method === "chatgpt_worker_submit") {
+          submittedPrompt = args.prompt as string;
+          return Promise.resolve({ submitted: true });
+        }
+        if (method === "read_chatgpt_worker") {
+          expect(submittedPrompt).not.toBe("");
+          return Promise.reject(new Error("TIMEOUT: worker read timed out"));
+        }
+        if (method === "close_tab") {
+          closeCalls += 1;
+          return Promise.resolve({ closed: true });
+        }
+        return Promise.resolve({});
+      },
+    } as BrowserClient;
+    const client = await connect(fakeBrowser);
+
+    const spawned = await client.callTool({
+      name: "spawn_agents",
+      arguments: { tasks: [{ agent_id: "exhaust", prompt: "work" }], max_concurrency: 1 },
+    });
+    const runId = (spawned.structuredContent as Record<string, unknown>).run_id as string;
+
+    await client.callTool({ name: "collect_agents", arguments: { run_id: runId } });
+    await client.callTool({ name: "collect_agents", arguments: { run_id: runId } });
+    const exhausted = await client.callTool({ name: "collect_agents", arguments: { run_id: runId } });
+
+    expect(exhausted.structuredContent).toMatchObject({
+      state: "FAILED",
+      barrier: { satisfied: false },
+      failed: [{
+        agent_id: "exhaust",
+        state: "FAILED_TERMINAL",
+        error: { code: "TIMEOUT", retryable: false },
+      }],
+      pending: [],
+    });
+    expect(JSON.stringify(exhausted.structuredContent)).toMatch(/retry budget exhausted/);
+    expect(closeCalls).toBe(1);
+    await client.close();
+  });
+
+  it("reports cancellation coherently after some workers already completed", async () => {
+    const submitted = new Map<number, string>();
+    let nextTabId = 201;
+    const fakeBrowser = {
+      status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "new_tab") return Promise.resolve({ tab: { tabId: nextTabId++ } });
+        if (method === "chatgpt_worker_submit") {
+          submitted.set(args.tabId as number, args.prompt as string);
+          return Promise.resolve({ submitted: true });
+        }
+        if (method === "read_chatgpt_worker") {
+          const prompt = submitted.get(args.tabId as number);
+          if (!prompt) throw new Error("missing prompt");
+          return Promise.resolve({
+            ready: true,
+            generating: false,
+            latestUserText: prompt,
+            latestAssistantText: `Done\n${completionMarker(prompt)}`,
+          });
+        }
+        if (method === "close_tab") return Promise.resolve({ closed: true });
+        return Promise.resolve({});
+      },
+    } as BrowserClient;
+    const client = await connect(fakeBrowser);
+
+    const spawned = await client.callTool({
+      name: "spawn_agents",
+      arguments: {
+        tasks: [
+          { agent_id: "done", prompt: "finish first" },
+          { agent_id: "cancelled", prompt: "wait second" },
+        ],
+        max_concurrency: 1,
+      },
+    });
+    const runId = (spawned.structuredContent as Record<string, unknown>).run_id as string;
+
+    const firstCollect = await client.callTool({ name: "collect_agents", arguments: { run_id: runId } });
+    expect(firstCollect.structuredContent).toMatchObject({
+      results: [{ agent_id: "done", state: "VERIFIED_DONE" }],
+      pending: [{ agent_id: "cancelled", state: "DISPATCHED" }],
+    });
+
+    const cancelled = await client.callTool({ name: "cancel_agents", arguments: { run_id: runId } });
+    expect(cancelled.structuredContent).toMatchObject({
+      cancelled: true,
+      jobs: [
+        { agent_id: "done", state: "VERIFIED_DONE" },
+        { agent_id: "cancelled", state: "CANCELLED" },
+      ],
+    });
+
+    const afterCancel = await client.callTool({ name: "collect_agents", arguments: { run_id: runId } });
+    expect(afterCancel.structuredContent).toMatchObject({
+      state: "CANCELLED",
+      barrier: { satisfied: false },
+      results: [{
+        agent_id: "done",
+        state: "VERIFIED_DONE",
+        result: { type: "text", text: "Done" },
+      }],
+      pending: [],
+    });
+    await client.close();
+  });
+
 });
