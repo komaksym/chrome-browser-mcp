@@ -191,6 +191,15 @@ ${verifier.stderr}`);
   client = new Client({ name: "chrome-e2e", version: "1.0.0" });
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${mcpPort}/mcp`)));
 
+  const advertisedTools = await client.listTools();
+  const advertisedToolNames = advertisedTools.tools.map((tool) => tool.name);
+  for (const name of ["spawn_agents", "collect_agents", "cancel_agents"]) {
+    assert.ok(advertisedToolNames.includes(name), `Expected live MCP server to advertise ${name}`);
+  }
+  for (const name of ["spawn_chatgpt_agent", "read_chatgpt_agent"]) {
+    assert.ok(!advertisedToolNames.includes(name), `Live MCP server must not advertise stale tool ${name}`);
+  }
+
   const listed = await client.callTool({ name: "list_tabs", arguments: {} });
   const tabs = listed.structuredContent.tabs;
   const testTabs = tabs.filter((tab) => tab.url.startsWith(`http://127.0.0.1:${pagePort}/`));

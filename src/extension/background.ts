@@ -1,5 +1,6 @@
 import { performPageAction, type PageAction } from "./actions.js";
 import { extractPage } from "./extractor.js";
+import { runChatGptWorkerCommand, type ChatGptWorkerCommand } from "./chatgptWorker.js";
 
 type BrowserMethod =
   | "browser_status"
@@ -15,7 +16,9 @@ type BrowserMethod =
   | "navigate"
   | "new_tab"
   | "close_tab"
-  | "select_option";
+  | "select_option"
+  | "chatgpt_worker_submit"
+  | "read_chatgpt_worker";
 
 interface NativeRequest {
   type: "request";
@@ -32,6 +35,12 @@ let reconnectDelay = 500;
 
 const SENSITIVE_QUERY_KEY = /(?:access[_-]?token|token|auth|authorization|api[_-]?key|secret|session|code|sig|signature|jwt|credential|password)/i;
 
+/** Selects a non-empty committed URL or Chrome's pending navigation URL for a tab. */
+function resolveTabUrl(tab: chrome.tabs.Tab): string {
+  return tab.url || tab.pendingUrl || "";
+}
+
+/** Removes credentials, fragments, and sensitive query values before exposing a tab URL. */
 function sanitizeUrl(rawUrl: string): string {
   try {
     const url = new URL(rawUrl);
@@ -47,8 +56,9 @@ function sanitizeUrl(rawUrl: string): string {
   }
 }
 
+/** Converts Chrome's tab metadata into the safe public tab summary. */
 function serializeTab(tab: chrome.tabs.Tab) {
-  const rawUrl = tab.url ?? tab.pendingUrl ?? "";
+  const rawUrl = resolveTabUrl(tab);
   return {
     tabId: tab.id ?? -1,
     windowId: tab.windowId,
@@ -63,10 +73,11 @@ function serializeTab(tab: chrome.tabs.Tab) {
   };
 }
 
+/** Ensures that a tab exists, is non-incognito, and points at an ordinary HTTP(S) page. */
 function assertReadableTab(tab: chrome.tabs.Tab): asserts tab is chrome.tabs.Tab & { id: number; url: string } {
   if (tab.id === undefined) throw new Error("TAB_NOT_FOUND: Tab has no ID");
-  const url = tab.url ?? tab.pendingUrl ?? "";
-  if (!url) throw new Error("UNREADABLE_PAGE: Tab has no committed URL");
+  const url = resolveTabUrl(tab);
+  if (!url) throw new Error("UNREADABLE_PAGE: Tab has no URL");
   const parsed = new URL(url);
   if (RESTRICTED_SCHEMES.includes(parsed.protocol) || !["http:", "https:"].includes(parsed.protocol)) {
     throw new Error(`RESTRICTED_PAGE: Cannot access ${parsed.protocol} pages`);
@@ -74,6 +85,7 @@ function assertReadableTab(tab: chrome.tabs.Tab): asserts tab is chrome.tabs.Tab
   if (tab.incognito) throw new Error("INCOGNITO_DISABLED: Incognito tabs are excluded");
 }
 
+/** Validates one request parameter as an absolute HTTP(S) URL. */
 function httpUrlParam(params: Record<string, unknown>, key: string): string {
   const raw = params[key];
   if (typeof raw !== "string" || raw.length === 0) throw new Error(`INVALID_ARGUMENT: ${key} is required`);
@@ -87,11 +99,13 @@ function httpUrlParam(params: Record<string, unknown>, key: string): string {
   return raw;
 }
 
+/** Lists the serializable normal tabs for one optional Chrome window. */
 async function listTabs(windowId?: number) {
   const tabs = await chrome.tabs.query(windowId === undefined ? {} : { windowId });
   return tabs.filter((tab) => !tab.incognito).map(serializeTab);
 }
 
+/** Extracts bounded visible page data from one normal readable browser tab. */
 async function readTab(tabId: number, offset: number, maxCharacters: number, includeLinks: boolean) {
   const tab = await chrome.tabs.get(tabId);
   assertReadableTab(tab);
@@ -114,6 +128,29 @@ async function readTab(tabId: number, offset: number, maxCharacters: number, inc
   };
 }
 
+/** Runs an internal worker command after ChatGPT navigation is committed and safe to inject into. */
+async function runChatGptWorker(tabId: number, command: ChatGptWorkerCommand) {
+  const tab = await chrome.tabs.get(tabId);
+  assertReadableTab(tab);
+  const url = resolveTabUrl(tab);
+  if (new URL(url).hostname !== "chatgpt.com") {
+    throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
+  }
+  if (!tab.url || tab.status === "loading") {
+    throw new Error("NAVIGATION_IN_PROGRESS: ChatGPT worker tab is still navigating");
+  }
+  const injection = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [0] },
+    func: runChatGptWorkerCommand,
+    args: [command],
+    world: "ISOLATED",
+  });
+  const result = injection[0]?.result;
+  if (!result) throw new Error("EXTRACTION_FAILED: No ChatGPT worker result returned");
+  return result;
+}
+
+/** Executes one constrained DOM action in a normal readable browser tab. */
 async function runPageAction(tabId: number, action: PageAction) {
   const tab = await chrome.tabs.get(tabId);
   assertReadableTab(tab);
@@ -128,11 +165,13 @@ async function runPageAction(tabId: number, action: PageAction) {
   return { tab: serializeTab(tab), result };
 }
 
+/** Reads a finite numeric parameter, falling back when the caller omitted or malformed it. */
 function numberParam(params: Record<string, unknown>, key: string, fallback: number): number {
   const value = params[key];
   return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : fallback;
 }
 
+/** Reads a required string parameter and optionally permits an empty string. */
 function stringParam(params: Record<string, unknown>, key: string, allowEmpty = false): string {
   const value = params[key];
   if (typeof value !== "string" || (!allowEmpty && value.length === 0)) {
@@ -141,6 +180,7 @@ function stringParam(params: Record<string, unknown>, key: string, allowEmpty = 
   return value;
 }
 
+/** Routes one validated native request to its browser operation and serializable response. */
 async function execute(method: BrowserMethod, params: Record<string, unknown>): Promise<unknown> {
   switch (method) {
     case "browser_status":
@@ -196,6 +236,13 @@ async function execute(method: BrowserMethod, params: Record<string, unknown>): 
       const matches = tabs.filter((tab) => `${tab.title}\n${tab.url}`.toLocaleLowerCase().includes(query)).slice(0, maxResults);
       return { query, tabs: matches, count: matches.length };
     }
+    case "chatgpt_worker_submit":
+      return runChatGptWorker(numberParam(params, "tabId", -1), {
+        action: "submit",
+        prompt: stringParam(params, "prompt"),
+      });
+    case "read_chatgpt_worker":
+      return runChatGptWorker(numberParam(params, "tabId", -1), { action: "read" });
     case "click":
       return runPageAction(numberParam(params, "tabId", -1), { action: "click", target: stringParam(params, "target") });
     case "type":
@@ -245,6 +292,7 @@ async function execute(method: BrowserMethod, params: Record<string, unknown>): 
   }
 }
 
+/** Opens the native bridge once and installs reconnect handling for extension restarts. */
 function connectNative(): void {
   if (nativePort) return;
   try {
@@ -280,6 +328,7 @@ function connectNative(): void {
   }
 }
 
+/** Schedules one exponentially backed-off native bridge reconnect attempt. */
 function scheduleReconnect(): void {
   if (reconnectTimer) return;
   reconnectTimer = setTimeout(() => {
