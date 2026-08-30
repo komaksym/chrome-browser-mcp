@@ -125,11 +125,12 @@ describe("MCP HTTP server", () => {
         { agent_id: "security", state: "CREATED" },
       ],
     });
-    expect(typeof spawned.structuredContent?.run_id).toBe("string");
+    const spawnedContent = spawned.structuredContent as Record<string, unknown>;
+    expect(typeof spawnedContent.run_id).toBe("string");
     expect(JSON.stringify(spawned.structuredContent)).not.toMatch(/tab_?id/i);
     expect(requests.filter((request) => request.method === "new_tab")).toHaveLength(1);
 
-    const runId = spawned.structuredContent?.run_id as string;
+    const runId = spawnedContent.run_id as string;
     const firstCollect = await client.callTool({
       name: "collect_agents",
       arguments: { run_id: runId },
