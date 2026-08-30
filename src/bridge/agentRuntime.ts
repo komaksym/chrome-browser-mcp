@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { BrowserClient } from "./browserClient.js";
+import { BrowserError, type BrowserClient } from "./browserClient.js";
 
 type AgentState =
   | "CREATED"
@@ -57,6 +57,9 @@ const transientCodes = new Set([
 ]);
 
 function errorDetails(error: unknown): AgentError {
+  if (error instanceof BrowserError) {
+    return { code: error.code, message: error.detail, retryable: transientCodes.has(error.code) };
+  }
   const raw = error instanceof Error ? error.message : String(error);
   const match = /^([A-Z][A-Z0-9_]+):\s*(.*)$/.exec(raw);
   const code = match?.[1] ?? "AGENT_RUNTIME_ERROR";
@@ -212,12 +215,39 @@ export class AgentRuntime {
         throw new Error("CHATGPT_AGENT_START_FAILED: invalid tab ID");
       }
       job.tabId = tabId;
-      await this.browser.request("chatgpt_worker_submit", { tabId, prompt: job.submittedPrompt });
+      await this.submitWithRetry(tabId, job.submittedPrompt);
       job.state = "DISPATCHED";
     } catch (error) {
       job.error = errorDetails(error);
       job.state = job.error.retryable ? "FAILED_TRANSIENT" : "FAILED_TERMINAL";
     }
+  }
+
+  private async submitWithRetry(tabId: number, prompt: string): Promise<void> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        await this.browser.request("chatgpt_worker_submit", { tabId, prompt });
+        return;
+      } catch (error) {
+        const details = errorDetails(error);
+        if (!details.retryable) throw error;
+        lastError = error;
+
+        try {
+          const state = await this.browser.request<WorkerReadResult>("read_chatgpt_worker", { tabId });
+          if (state.latestUserText === prompt) return;
+        } catch {
+          // The follow-up probe is diagnostic; retry policy is driven by the original error.
+        }
+
+        if (attempt < 19) {
+          const delayMs = Math.min(500, 50 * 2 ** Math.min(attempt, 3));
+          await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+        }
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("CHATGPT_NOT_READY: worker submission retries exhausted");
   }
 
   private async collectJob(job: AgentJob): Promise<void> {
