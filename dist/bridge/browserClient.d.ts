@@ -1,5 +1,10 @@
 import type { Readable, Writable } from "node:stream";
 import type { BrowserMethod } from "./types.js";
+export declare class BrowserError extends Error {
+    readonly code: string;
+    readonly detail: string;
+    constructor(code: string, detail: string);
+}
 export declare class BrowserClient {
     private readonly output;
     private readonly timeoutMs;
