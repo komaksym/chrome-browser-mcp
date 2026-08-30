@@ -29,6 +29,8 @@ interface AgentJob {
   agentId: string;
   completionMarker: string;
   submittedPrompt: string;
+  submitted: boolean;
+  transientFailures: number;
   state: AgentState;
   tabId?: number;
   result?: string;
@@ -55,6 +57,8 @@ const transientCodes = new Set([
   "BROWSER_DISCONNECTED",
   "TIMEOUT",
 ]);
+
+const MAX_TRANSIENT_FAILURES = 3;
 
 function errorDetails(error: unknown): AgentError {
   if (error instanceof BrowserError) {
@@ -124,6 +128,8 @@ export class AgentRuntime {
       return {
         ...identity,
         submittedPrompt: buildWorkerPrompt(identity, task.prompt),
+        submitted: false,
+        transientFailures: 0,
         state: "CREATED",
       };
     });
@@ -136,6 +142,7 @@ export class AgentRuntime {
 
   async collectAgents(runId: string) {
     const run = this.requireRun(runId);
+    await this.retryTransientJobs(run);
     const active = run.jobs.filter((job) => job.state === "DISPATCHED" || job.state === "GENERATING");
     await Promise.all(active.map((job) => this.collectJob(job)));
     await this.fillSlots(run);
@@ -187,17 +194,38 @@ export class AgentRuntime {
 
   private runState(run: AgentRun): "RUNNING" | "COMPLETE" | "FAILED" | "CANCELLED" {
     if (run.jobs.every((job) => job.state === "VERIFIED_DONE")) return "COMPLETE";
-    if (run.jobs.every((job) => job.state === "CANCELLED")) return "CANCELLED";
-    const unfinished = run.jobs.some(
-      (job) => job.state === "CREATED" || job.state === "DISPATCHED" || job.state === "GENERATING",
+
+    const allSettled = run.jobs.every(
+      (job) => job.state === "VERIFIED_DONE" || job.state === "FAILED_TERMINAL" || job.state === "CANCELLED",
     );
-    if (!unfinished && run.jobs.some((job) => job.state === "FAILED_TERMINAL")) return "FAILED";
+    if (allSettled && run.jobs.some((job) => job.state === "CANCELLED")) return "CANCELLED";
+    if (allSettled && run.jobs.some((job) => job.state === "FAILED_TERMINAL")) return "FAILED";
     return "RUNNING";
   }
 
+  private occupiesSlot(job: AgentJob): boolean {
+    return (
+      job.state === "DISPATCHED" ||
+      job.state === "GENERATING" ||
+      (job.state === "FAILED_TRANSIENT" && job.tabId !== undefined)
+    );
+  }
+
+  private async retryTransientJobs(run: AgentRun): Promise<void> {
+    for (const job of run.jobs) {
+      if (job.state !== "FAILED_TRANSIENT") continue;
+      if (job.tabId !== undefined) {
+        if (job.submitted) await this.collectJob(job);
+        else await this.dispatch(job);
+        continue;
+      }
+      if (run.jobs.filter((candidate) => this.occupiesSlot(candidate)).length >= run.maxConcurrency) continue;
+      await this.dispatch(job);
+    }
+  }
+
   private async fillSlots(run: AgentRun): Promise<void> {
-    const activeCount = () =>
-      run.jobs.filter((job) => job.state === "DISPATCHED" || job.state === "GENERATING").length;
+    const activeCount = () => run.jobs.filter((job) => this.occupiesSlot(job)).length;
     for (const job of run.jobs) {
       if (job.state !== "CREATED" || activeCount() >= run.maxConcurrency) continue;
       await this.dispatch(job);
@@ -206,20 +234,54 @@ export class AgentRuntime {
 
   private async dispatch(job: AgentJob): Promise<void> {
     try {
-      const opened = await this.browser.request<{ tab: { tabId: number } }>("new_tab", {
-        url: "https://chatgpt.com/",
-        active: false,
-      });
-      const tabId = opened.tab.tabId;
-      if (!Number.isInteger(tabId) || tabId <= 0) {
-        throw new Error("CHATGPT_AGENT_START_FAILED: invalid tab ID");
+      let tabId = job.tabId;
+      if (tabId === undefined) {
+        const opened = await this.browser.request<{ tab: { tabId: number } }>("new_tab", {
+          url: "https://chatgpt.com/",
+          active: false,
+        });
+        tabId = opened.tab.tabId;
+        if (!Number.isInteger(tabId) || tabId <= 0) {
+          throw new Error("CHATGPT_AGENT_START_FAILED: invalid tab ID");
+        }
+        job.tabId = tabId;
       }
-      job.tabId = tabId;
       await this.submitWithRetry(tabId, job.submittedPrompt);
+      job.submitted = true;
+      job.error = undefined;
+      job.transientFailures = 0;
       job.state = "DISPATCHED";
     } catch (error) {
-      job.error = errorDetails(error);
-      job.state = job.error.retryable ? "FAILED_TRANSIENT" : "FAILED_TERMINAL";
+      await this.failJob(job, error);
+    }
+  }
+
+  private async failJob(job: AgentJob, error: unknown): Promise<void> {
+    const details = errorDetails(error);
+    if (details.retryable) {
+      job.transientFailures += 1;
+      if (job.transientFailures < MAX_TRANSIENT_FAILURES) {
+        job.error = details;
+        job.state = "FAILED_TRANSIENT";
+        return;
+      }
+      job.error = {
+        ...details,
+        message: `${details.message} (transient retry budget exhausted)`,
+        retryable: false,
+      };
+    } else {
+      job.error = details;
+    }
+
+    job.state = "FAILED_TERMINAL";
+    if (job.tabId !== undefined) {
+      try {
+        await this.browser.request("close_tab", { tabId: job.tabId });
+      } catch {
+        // Terminal jobs never access the worker again, even if tab cleanup fails.
+      }
+      job.tabId = undefined;
     }
   }
 
@@ -254,6 +316,8 @@ export class AgentRuntime {
     if (job.tabId === undefined) return;
     try {
       const worker = await this.browser.request<WorkerReadResult>("read_chatgpt_worker", { tabId: job.tabId });
+      job.error = undefined;
+      job.transientFailures = 0;
       if (!worker.ready || worker.generating || !worker.latestAssistantText) {
         job.state = "GENERATING";
         return;
@@ -269,8 +333,7 @@ export class AgentRuntime {
       job.error = undefined;
       job.state = "VERIFIED_DONE";
     } catch (error) {
-      job.error = errorDetails(error);
-      job.state = job.error.retryable ? "FAILED_TRANSIENT" : "FAILED_TERMINAL";
+      await this.failJob(job, error);
     }
   }
 }
