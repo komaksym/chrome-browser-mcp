@@ -3,6 +3,16 @@ import type { Readable, Writable } from "node:stream";
 import { NativeMessageReader, writeNativeMessage } from "./nativeMessaging.js";
 import type { BrowserMethod, IncomingNativeMessage, NativeRequest } from "./types.js";
 
+export class BrowserError extends Error {
+  constructor(
+    readonly code: string,
+    readonly detail: string,
+  ) {
+    super(`${code}: ${detail}`);
+    this.name = "BrowserError";
+  }
+}
+
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -66,7 +76,7 @@ export class BrowserClient {
     clearTimeout(pending.timeout);
     this.pending.delete(message.id);
     if (message.error) {
-      pending.reject(new Error(`${message.error.code}: ${message.error.message}`));
+      pending.reject(new BrowserError(message.error.code, message.error.message));
     } else {
       pending.resolve(message.result);
     }
