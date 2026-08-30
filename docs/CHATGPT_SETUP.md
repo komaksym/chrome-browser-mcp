@@ -8,13 +8,17 @@ This is the account-bound part of the installation. It must be completed while C
 npm run verify:local
 ```
 
-Expected properties:
+Expected properties for this patch:
 
 - `connected: true`
 - extension ID `jlpddlfiallighiohmhhkemgbhofpnha`
+- extension version `0.1.2`
+- MCP version `0.1.2`
 - 17 tools discovered
 
-If the port is closed, open Chrome and check that the unpacked extension is enabled.
+If the extension and MCP versions differ, the local runtime is stale on one side. If the port is closed, open Chrome and check that the unpacked extension is enabled.
+
+After the extension has been loaded unpacked once, do not select its directory again for normal updates. Published patches commit both runtime builds under `dist/`, so the normal update flow is `git pull`, then click **Update** in `chrome://extensions`. No separate build command or path selection is required just to consume a published patch.
 
 ## B. Create the OpenAI tunnel
 
@@ -83,6 +87,7 @@ Read that child agent tab and report its visible result.
 Pass criteria:
 
 - status is connected;
+- extension version and MCP version are identical;
 - tab titles and URLs match Chrome;
 - page text matches what is visibly present;
 - requested harmless actions happen in the intended tab;
@@ -96,6 +101,10 @@ Pass criteria:
 - Chrome is closed, the extension is disabled, or the native-host manifest is missing.
 - Run `npm run install:mac` again.
 - Confirm the extension ID exactly matches the expected ID.
+
+### Extension updated but tools are still stale
+
+Run `npm run verify:local` and compare `Extension version`, `MCP version`, and `Tools`. For published patches, `git pull` updates both `dist/extension` and `dist/bridge`; clicking Chrome's **Update** reloads the newly pulled extension/native-messaging runtime.
 
 ### Native host not found
 
