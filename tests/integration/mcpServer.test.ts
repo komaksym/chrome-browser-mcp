@@ -1,3 +1,4 @@
+// Public-seam specification for the job-based sub-agent runtime.
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
