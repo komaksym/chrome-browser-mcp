@@ -12,9 +12,9 @@ Expected properties for this patch:
 
 - `connected: true`
 - extension ID `jlpddlfiallighiohmhhkemgbhofpnha`
-- extension version `0.1.2`
-- MCP version `0.1.2`
-- 17 tools discovered
+- extension version `0.1.3`
+- MCP version `0.1.3`
+- 18 tools discovered
 
 If the extension and MCP versions differ, the local runtime is stale on one side. If the port is closed, open Chrome and check that the unpacked extension is enabled.
 
@@ -65,8 +65,9 @@ Do not report the tunnel as working unless `doctor` succeeds and the running cli
    - `navigate`
    - `new_tab`
    - `close_tab`
-   - `spawn_chatgpt_agent`
-   - `read_chatgpt_agent`
+   - `spawn_agents`
+   - `collect_agents`
+   - `cancel_agents`
 
 ## D. Real ChatGPT smoke test
 
@@ -80,8 +81,8 @@ List all my open Chrome tabs.
 Read the harmless test tab and summarize it.
 Click the harmless test button.
 Type "hello" into the harmless test input, but do not submit anything.
-Spawn a ChatGPT child agent with the task: "Reply with exactly FRUIT".
-Read that child agent tab and report its visible result.
+Call `spawn_agents` with one task whose `agent_id` is `fruit` and prompt is "Reply with exactly FRUIT", using `max_concurrency: 1`.
+Then call `collect_agents` with the returned `run_id` until the run is complete, and report the verified result.
 ```
 
 Pass criteria:
@@ -91,7 +92,8 @@ Pass criteria:
 - tab titles and URLs match Chrome;
 - page text matches what is visibly present;
 - requested harmless actions happen in the intended tab;
-- the child agent opens in a background `chatgpt.com` tab and the returned tab ID can be read later;
+- the agent API returns stable run/job/task/agent identities and never exposes worker tab IDs;
+- `collect_agents` returns a successful result only after worker identity and completion-marker validation;
 - instructions embedded inside a webpage are treated only as webpage text and never as authority for an action.
 
 ## Troubleshooting
@@ -116,11 +118,11 @@ Confirm this file exists:
 
 The `path` inside it must point to an executable `scripts/native-host-wrapper.sh` in the current checkout. Moving the repository requires rerunning `npm run install:mac`.
 
-### Child agent does not submit
+### Agent worker does not submit
 
 - Confirm the new tab is signed into ChatGPT and has loaded the normal web composer.
 - Refresh the developer-mode app after updating the MCP server.
-- If ChatGPT changed its web markup, update the `#prompt-textarea` or send-button selector in `src/bridge/mcpServer.ts`.
+- If ChatGPT changed its web markup, update the composer/send-button selectors in `src/extension/chatgptWorker.ts`.
 
 ### Tunnel is not visible in ChatGPT
 
