@@ -11,6 +11,13 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
   const generatingSelector =
     'button[data-testid="stop-button"], button[aria-label*="Stop generating"], button[aria-label="Stop"]';
 
+  const exactMessageText = (element: Element | undefined): string | null => {
+    if (!element) return null;
+    const body = element.querySelector(".markdown, [data-message-content]") ?? element;
+    const html = body as HTMLElement;
+    return typeof html.innerText === "string" ? html.innerText : body.textContent ?? "";
+  };
+
   const composer = document.querySelector(composerSelector);
   const ready =
     composer instanceof HTMLElement &&
@@ -18,6 +25,8 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
     !("readOnly" in composer && Boolean((composer as HTMLInputElement).readOnly));
 
   if (command.action === "submit") {
+    const existingUsers = Array.from(document.querySelectorAll(userMessageSelector));
+    if (exactMessageText(existingUsers.at(-1)) === command.prompt) return { submitted: true as const };
     if (!ready || !(composer instanceof HTMLElement)) {
       throw new Error("CHATGPT_NOT_READY: composer is not ready");
     }
@@ -45,19 +54,12 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
     return { submitted: true as const };
   }
 
-  const messageText = (element: Element | undefined): string | null => {
-    if (!element) return null;
-    const body = element.querySelector(".markdown, [data-message-content]") ?? element;
-    const html = body as HTMLElement;
-    return typeof html.innerText === "string" ? html.innerText : body.textContent ?? "";
-  };
-
   const userMessages = Array.from(document.querySelectorAll(userMessageSelector));
   const assistantMessages = Array.from(document.querySelectorAll(assistantMessageSelector));
   return {
     ready,
     generating: document.querySelector(generatingSelector) !== null,
-    latestUserText: messageText(userMessages.at(-1)),
-    latestAssistantText: messageText(assistantMessages.at(-1)),
+    latestUserText: exactMessageText(userMessages.at(-1)),
+    latestAssistantText: exactMessageText(assistantMessages.at(-1)),
   };
 }
