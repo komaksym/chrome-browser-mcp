@@ -24,12 +24,6 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run artifacts:check
-      - name: Upload generated runtime artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: generated-dist
-          path: dist
       - run: npm audit --audit-level=high
       - name: Real Chromium E2E
         run: |
