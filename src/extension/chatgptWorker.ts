@@ -28,7 +28,7 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
       const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
       if (descriptor?.set) descriptor.set.call(composer, command.prompt);
       else composer.value = command.prompt;
-    } else if (composer.isContentEditable) {
+    } else if (composer.isContentEditable || composer.getAttribute("contenteditable") === "true") {
       composer.textContent = command.prompt;
     } else {
       throw new Error("CHATGPT_NOT_READY: composer is not editable");
