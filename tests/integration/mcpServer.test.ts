@@ -177,4 +177,67 @@ describe("MCP HTTP server", () => {
     });
     await client.close();
   });
+  it("retries transient worker submission failures but surfaces terminal failures", async () => {
+    let transientAttempts = 0;
+    const transientBrowser = {
+      status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
+      request: (method: string) => {
+        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 91 } });
+        if (method === "chatgpt_worker_submit") {
+          transientAttempts += 1;
+          if (transientAttempts === 1) {
+            return Promise.reject(new Error("CHATGPT_NOT_READY: composer is still mounting"));
+          }
+          return Promise.resolve({ submitted: true });
+        }
+        return Promise.resolve({});
+      },
+    } as BrowserClient;
+    const transientClient = await connect(transientBrowser);
+
+    const transient = await transientClient.callTool({
+      name: "spawn_agents",
+      arguments: { tasks: [{ agent_id: "retry", prompt: "work" }], max_concurrency: 1 },
+    });
+    expect(transient.structuredContent).toMatchObject({
+      state: "RUNNING",
+      jobs: [{ agent_id: "retry", state: "DISPATCHED" }],
+    });
+    expect(transientAttempts).toBe(2);
+    await transientClient.close();
+
+    let terminalAttempts = 0;
+    const terminalBrowser = {
+      status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
+      request: (method: string) => {
+        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 92 } });
+        if (method === "chatgpt_worker_submit") {
+          terminalAttempts += 1;
+          return Promise.reject(new Error("CHATGPT_UNSUPPORTED_PAGE: wrong origin"));
+        }
+        return Promise.resolve({});
+      },
+    } as BrowserClient;
+    const terminalClient = await connect(terminalBrowser);
+
+    const terminal = await terminalClient.callTool({
+      name: "spawn_agents",
+      arguments: { tasks: [{ agent_id: "terminal", prompt: "work" }], max_concurrency: 1 },
+    });
+    expect(terminal.structuredContent).toMatchObject({
+      state: "FAILED",
+      jobs: [{
+        agent_id: "terminal",
+        state: "FAILED_TERMINAL",
+        error: {
+          code: "CHATGPT_UNSUPPORTED_PAGE",
+          message: "wrong origin",
+          retryable: false,
+        },
+      }],
+    });
+    expect(terminalAttempts).toBe(1);
+    await terminalClient.close();
+  });
+
 });
