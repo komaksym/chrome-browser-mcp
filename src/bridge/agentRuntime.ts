@@ -551,7 +551,7 @@ export class AgentRuntime {
 
     job.diagnostics.recovery_steps.push("bounded_reread");
     const reread = await this.rereadWithBackoff(run, job, "backoff_reread", 3);
-    if (run.cancellationRequested || job.state === "VERIFIED_DONE") return;
+    if (run.cancellationRequested || Boolean(job.result)) return;
 
     let previousActiveTabId: number | undefined;
     try {
@@ -569,7 +569,7 @@ export class AgentRuntime {
     } finally {
       await this.restoreActiveTab(previousActiveTabId);
     }
-    if (run.cancellationRequested || job.state === "VERIFIED_DONE") return;
+    if (run.cancellationRequested || Boolean(job.result)) return;
 
     const latest = job.bestObservation ?? reread ?? initial;
     if (this.generationDefinitelyFinished(latest)) {
@@ -577,7 +577,7 @@ export class AgentRuntime {
       await this.browser.request("reload_worker_tab", { tabId });
       await this.rereadWithBackoff(run, job, "reload_reread", 4);
     }
-    if (run.cancellationRequested || job.state === "VERIFIED_DONE") return;
+    if (run.cancellationRequested || Boolean(job.result)) return;
 
     job.error = {
       code: "RECOVERY_EXHAUSTED",
