@@ -406,7 +406,7 @@ describe("AgentRuntime", () => {
         state: "FAILED_TERMINAL",
         error: { code: "RECOVERY_EXHAUSTED", retryable: false },
         diagnostics: {
-          uncertainty_reason: expect.stringContaining("completion marker"),
+          uncertainty_reason: "completion marker missing after generation appeared finished",
           recovery_steps: ["current_state", "bounded_reread", "activate_worker_tab", "reload_worker_tab"],
           tab: { active: false, discarded: true, status: "complete" },
         },
