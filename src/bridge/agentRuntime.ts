@@ -341,7 +341,7 @@ export class AgentRuntime {
 
   /** Opens a private worker tab when needed and submits the job's protocol-bound prompt. */
   private async dispatch(run: AgentRun, job: AgentJob): Promise<void> {
-    if (run.cancellationRequested || job.state === "CANCELLED") return;
+    if (run.cancellationRequested) return;
     try {
       let tabId = job.tabId;
       if (tabId === undefined) {
@@ -369,7 +369,7 @@ export class AgentRuntime {
 
   /** Records a failure or closes the job permanently after its transient retry budget is exhausted. */
   private async failJob(run: AgentRun, job: AgentJob, error: unknown): Promise<void> {
-    if (run.cancellationRequested || job.state === "CANCELLED") return;
+    if (run.cancellationRequested) return;
     const details = errorDetails(error);
     if (details.retryable) {
       job.transientFailures += 1;
@@ -508,12 +508,12 @@ export class AgentRuntime {
     if (tabId === undefined) return undefined;
     let latest: WorkerReadResult | undefined;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
-      if (run.cancellationRequested || job.state === "CANCELLED") return undefined;
+      if (run.cancellationRequested) return undefined;
       if (attempt > 0) await new Promise<void>((resolve) => setTimeout(resolve, 50 * 2 ** (attempt - 1)));
-      if (run.cancellationRequested || job.state === "CANCELLED") return undefined;
+      if (run.cancellationRequested) return undefined;
       try {
         latest = await this.browser.request<WorkerReadResult>("read_chatgpt_worker", { tabId });
-        if (run.cancellationRequested || job.state === "CANCELLED") return undefined;
+        if (run.cancellationRequested) return undefined;
         this.rememberObservation(job, latest, source);
         if (this.acceptObservation(job, latest)) return latest;
       } catch (error) {
@@ -551,7 +551,7 @@ export class AgentRuntime {
 
     job.diagnostics.recovery_steps.push("bounded_reread");
     const reread = await this.rereadWithBackoff(run, job, "backoff_reread", 3);
-    if (run.cancellationRequested || job.state === "CANCELLED" || job.state === "VERIFIED_DONE") return;
+    if (run.cancellationRequested || job.state === "VERIFIED_DONE") return;
 
     let previousActiveTabId: number | undefined;
     try {
@@ -569,7 +569,7 @@ export class AgentRuntime {
     } finally {
       await this.restoreActiveTab(previousActiveTabId);
     }
-    if (run.cancellationRequested || job.state === "CANCELLED" || job.state === "VERIFIED_DONE") return;
+    if (run.cancellationRequested || job.state === "VERIFIED_DONE") return;
 
     const latest = job.bestObservation ?? reread ?? initial;
     if (this.generationDefinitelyFinished(latest)) {
@@ -577,7 +577,7 @@ export class AgentRuntime {
       await this.browser.request("reload_worker_tab", { tabId });
       await this.rereadWithBackoff(run, job, "reload_reread", 4);
     }
-    if (run.cancellationRequested || job.state === "CANCELLED" || job.state === "VERIFIED_DONE") return;
+    if (run.cancellationRequested || job.state === "VERIFIED_DONE") return;
 
     job.error = {
       code: "RECOVERY_EXHAUSTED",
@@ -591,10 +591,10 @@ export class AgentRuntime {
   /** Reads and validates one worker response before exposing its bounded untrusted result. */
   private async collectJob(run: AgentRun, job: AgentJob): Promise<void> {
     const tabId = job.tabId;
-    if (tabId === undefined || run.cancellationRequested || job.state === "CANCELLED") return;
+    if (tabId === undefined || run.cancellationRequested) return;
     try {
       const worker = await this.browser.request<WorkerReadResult>("read_chatgpt_worker", { tabId });
-      if (run.cancellationRequested || job.state === "CANCELLED") return;
+      if (run.cancellationRequested) return;
       job.error = undefined;
       job.transientFailures = 0;
       this.rememberObservation(job, worker, "initial_read");
@@ -608,7 +608,7 @@ export class AgentRuntime {
       if (this.acceptObservation(job, worker)) return;
       await this.recoverFinishedObservation(run, job, worker);
     } catch (error) {
-      if (run.cancellationRequested || job.state === "CANCELLED") return;
+      if (run.cancellationRequested) return;
       await this.failJob(run, job, error);
     }
   }
