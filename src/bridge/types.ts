@@ -14,7 +14,9 @@ export type BrowserMethod =
   | "close_tab"
   | "select_option"
   | "chatgpt_worker_submit"
-  | "read_chatgpt_worker";
+  | "read_chatgpt_worker"
+  | "activate_worker_tab"
+  | "reload_worker_tab";
 
 export interface NativeRequest {
   type: "request";
