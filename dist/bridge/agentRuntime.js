@@ -51,6 +51,9 @@ function publicJob(job) {
         task_id: job.taskId,
         state: job.state,
         ...(job.error ? { error: job.error } : {}),
+        ...(job.diagnostics.recovery_steps.length > 0 || job.diagnostics.uncertainty_reason
+            ? { diagnostics: job.diagnostics }
+            : {}),
     };
 }
 /** Caps a marker-validated worker result before it reaches an MCP response. */
@@ -93,6 +96,7 @@ export class AgentRuntime {
                 submittedPrompt: buildWorkerPrompt(identity, task.prompt),
                 submitted: false,
                 transientFailures: 0,
+                diagnostics: { recovery_steps: [] },
                 state: "CREATED",
             };
         });
@@ -120,7 +124,7 @@ export class AgentRuntime {
             }
             else {
                 await this.retryTransientJobs(run);
-                const active = run.jobs.filter((job) => job.state === "DISPATCHED" || job.state === "GENERATING");
+                const active = run.jobs.filter((job) => job.state === "DISPATCHED" || job.state === "GENERATING" || job.state === "OBSERVATION_UNCERTAIN");
                 await Promise.all(active.map((job) => this.collectJob(run, job)));
                 if (run.cancellationRequested)
                     await this.cancelRun(run);
@@ -173,7 +177,10 @@ export class AgentRuntime {
                 .filter((job) => job.state === "FAILED_TERMINAL" || job.state === "FAILED_TRANSIENT")
                 .map(publicJob),
             pending: run.jobs
-                .filter((job) => job.state === "CREATED" || job.state === "DISPATCHED" || job.state === "GENERATING")
+                .filter((job) => job.state === "CREATED" ||
+                job.state === "DISPATCHED" ||
+                job.state === "GENERATING" ||
+                job.state === "OBSERVATION_UNCERTAIN")
                 .map(publicJob),
         };
     }
@@ -198,6 +205,7 @@ export class AgentRuntime {
     occupiesSlot(job) {
         return (job.state === "DISPATCHED" ||
             job.state === "GENERATING" ||
+            job.state === "OBSERVATION_UNCERTAIN" ||
             (job.state === "FAILED_TRANSIENT" && job.tabId !== undefined));
     }
     /** Retries failed transient work without exceeding the run-wide concurrency ceiling. */
@@ -232,7 +240,7 @@ export class AgentRuntime {
     }
     /** Opens a private worker tab when needed and submits the job's protocol-bound prompt. */
     async dispatch(run, job) {
-        if (run.cancellationRequested || job.state === "CANCELLED")
+        if (run.cancellationRequested)
             return;
         try {
             let tabId = job.tabId;
@@ -263,7 +271,7 @@ export class AgentRuntime {
     }
     /** Records a failure or closes the job permanently after its transient retry budget is exhausted. */
     async failJob(run, job, error) {
-        if (run.cancellationRequested || job.state === "CANCELLED")
+        if (run.cancellationRequested)
             return;
         const details = errorDetails(error);
         if (details.retryable) {
@@ -343,10 +351,146 @@ export class AgentRuntime {
         }
         throw lastError instanceof Error ? lastError : new Error("CHATGPT_NOT_READY: worker submission retries exhausted");
     }
+    /** Records the latest worker observation and its browser metadata for recovery diagnostics. */
+    rememberObservation(job, worker, source) {
+        job.bestObservation = worker;
+        job.diagnostics.observation_source = source;
+        job.diagnostics.observation_state = {
+            ready: worker.ready,
+            generating: worker.generating,
+            hasAssistantText: Boolean(worker.latestAssistantText),
+        };
+        if (worker.tab) {
+            job.diagnostics.tab = {
+                active: worker.tab.active,
+                discarded: worker.tab.discarded,
+                status: worker.tab.status,
+                windowId: worker.tab.windowId,
+            };
+        }
+    }
+    /** Returns true only when the browser observation proves generation has stopped with assistant output present. */
+    generationDefinitelyFinished(worker) {
+        return worker.ready && !worker.generating && Boolean(worker.latestAssistantText);
+    }
+    /** Validates one observation and completes the job when the exact dispatched turn and marker are present. */
+    acceptObservation(job, worker) {
+        if (!this.generationDefinitelyFinished(worker))
+            return false;
+        if (worker.latestUserTruncated || worker.latestUserText !== job.submittedPrompt) {
+            throw new Error("WORKER_IDENTITY_MISMATCH: latest user message does not match the dispatched job");
+        }
+        const fullText = worker.latestAssistantText.trimEnd();
+        if (!fullText.endsWith(job.completionMarker))
+            return false;
+        const bounded = boundedWorkerResult(fullText.slice(0, -job.completionMarker.length).trimEnd());
+        job.result = {
+            type: "text",
+            text: bounded.text,
+            contentIsUntrusted: true,
+            warning: WORKER_RESULT_WARNING,
+            truncated: Boolean(worker.latestAssistantTruncated) || bounded.truncated,
+        };
+        job.error = undefined;
+        job.diagnostics.uncertainty_reason = undefined;
+        job.state = "VERIFIED_DONE";
+        return true;
+    }
+    /** Reads the same worker turn with bounded backoff and never submits another prompt. */
+    async rereadWithBackoff(run, job, source, attempts) {
+        const tabId = job.tabId;
+        if (tabId === undefined)
+            return undefined;
+        let latest;
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+            if (run.cancellationRequested)
+                return undefined;
+            if (attempt > 0)
+                await new Promise((resolve) => setTimeout(resolve, 50 * 2 ** (attempt - 1)));
+            if (run.cancellationRequested)
+                return undefined;
+            try {
+                latest = await this.browser.request("read_chatgpt_worker", { tabId });
+                if (run.cancellationRequested)
+                    return undefined;
+                this.rememberObservation(job, latest, source);
+                if (this.acceptObservation(job, latest))
+                    return latest;
+            }
+            catch (error) {
+                const details = errorDetails(error);
+                job.error = details;
+                if (!details.retryable)
+                    throw error;
+            }
+        }
+        return latest;
+    }
+    /** Restores the previously active normal tab after activation-based worker recovery when possible. */
+    async restoreActiveTab(tabId) {
+        if (tabId === undefined)
+            return;
+        try {
+            await this.browser.request("activate_worker_tab", { tabId, allowNonWorker: true });
+        }
+        catch {
+            // Restoration is best-effort; recovery outcome must not be replaced by a focus error.
+        }
+    }
+    /** Runs the bounded observation-only recovery ladder for a finished turn whose marker was not observed. */
+    async recoverFinishedObservation(run, job, initial) {
+        const tabId = job.tabId;
+        if (tabId === undefined)
+            return;
+        job.state = "OBSERVATION_UNCERTAIN";
+        job.diagnostics.uncertainty_reason = "completion marker missing after generation appeared finished";
+        job.diagnostics.recovery_steps = ["current_state"];
+        if (this.acceptObservation(job, job.bestObservation ?? initial))
+            return;
+        job.diagnostics.recovery_steps.push("bounded_reread");
+        const reread = await this.rereadWithBackoff(run, job, "backoff_reread", 3);
+        if (run.cancellationRequested || Boolean(job.result))
+            return;
+        let previousActiveTabId;
+        try {
+            const active = await this.browser.request("get_active_tab");
+            previousActiveTabId = active.tab.tabId;
+        }
+        catch {
+            // Active-tab restoration metadata is optional.
+        }
+        job.diagnostics.recovery_steps.push("activate_worker_tab");
+        try {
+            await this.browser.request("activate_worker_tab", { tabId });
+            const activated = await this.rereadWithBackoff(run, job, "activated_reread", 2);
+            if (activated)
+                this.rememberObservation(job, activated, "activated_reread");
+        }
+        finally {
+            await this.restoreActiveTab(previousActiveTabId);
+        }
+        if (run.cancellationRequested || Boolean(job.result))
+            return;
+        const latest = job.bestObservation ?? reread ?? initial;
+        if (this.generationDefinitelyFinished(latest)) {
+            job.diagnostics.recovery_steps.push("reload_worker_tab");
+            await this.browser.request("reload_worker_tab", { tabId });
+            await this.rereadWithBackoff(run, job, "reload_reread", 4);
+        }
+        if (run.cancellationRequested || Boolean(job.result))
+            return;
+        job.error = {
+            code: "RECOVERY_EXHAUSTED",
+            message: "Finished worker result could not be verified after bounded observation recovery",
+            retryable: false,
+        };
+        job.state = "FAILED_TERMINAL";
+        await this.closeWorkerTab(job);
+    }
     /** Reads and validates one worker response before exposing its bounded untrusted result. */
     async collectJob(run, job) {
         const tabId = job.tabId;
-        if (tabId === undefined || run.cancellationRequested || job.state === "CANCELLED")
+        if (tabId === undefined || run.cancellationRequested)
             return;
         try {
             const worker = await this.browser.request("read_chatgpt_worker", { tabId });
@@ -354,6 +498,7 @@ export class AgentRuntime {
                 return;
             job.error = undefined;
             job.transientFailures = 0;
+            this.rememberObservation(job, worker, "initial_read");
             if (!worker.ready || worker.generating || !worker.latestAssistantText) {
                 job.state = "GENERATING";
                 return;
@@ -361,22 +506,13 @@ export class AgentRuntime {
             if (worker.latestUserTruncated || worker.latestUserText !== job.submittedPrompt) {
                 throw new Error("WORKER_IDENTITY_MISMATCH: latest user message does not match the dispatched job");
             }
-            const fullText = worker.latestAssistantText.trimEnd();
-            if (!fullText.endsWith(job.completionMarker)) {
-                throw new Error("COMPLETION_MARKER_MISSING: worker stopped without the expected completion marker");
-            }
-            const bounded = boundedWorkerResult(fullText.slice(0, -job.completionMarker.length).trimEnd());
-            job.result = {
-                type: "text",
-                text: bounded.text,
-                contentIsUntrusted: true,
-                warning: WORKER_RESULT_WARNING,
-                truncated: Boolean(worker.latestAssistantTruncated) || bounded.truncated,
-            };
-            job.error = undefined;
-            job.state = "VERIFIED_DONE";
+            if (this.acceptObservation(job, worker))
+                return;
+            await this.recoverFinishedObservation(run, job, worker);
         }
         catch (error) {
+            if (run.cancellationRequested)
+                return;
             await this.failJob(run, job, error);
         }
     }

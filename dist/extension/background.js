@@ -328,7 +328,27 @@ async function runChatGptWorker(tabId, command) {
   });
   const result = injection[0]?.result;
   if (!result) throw new Error("EXTRACTION_FAILED: No ChatGPT worker result returned");
-  return result;
+  return { ...result, tab: serializeTab(tab) };
+}
+async function activateWorkerTab(tabId, allowNonWorker = false) {
+  const tab = await chrome.tabs.get(tabId);
+  assertReadableTab(tab);
+  if (!allowNonWorker && new URL(resolveTabUrl(tab)).hostname !== "chatgpt.com") {
+    throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
+  }
+  await chrome.windows.update(tab.windowId, { focused: true });
+  const updated = await chrome.tabs.update(tabId, { active: true });
+  if (!updated) throw new Error("TAB_NOT_FOUND: Could not activate worker tab");
+  return { tab: serializeTab(updated) };
+}
+async function reloadWorkerTab(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  assertReadableTab(tab);
+  if (new URL(resolveTabUrl(tab)).hostname !== "chatgpt.com") {
+    throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
+  }
+  await chrome.tabs.reload(tabId);
+  return { tab: serializeTab(await chrome.tabs.get(tabId)) };
 }
 async function runPageAction(tabId, action) {
   const tab = await chrome.tabs.get(tabId);
@@ -415,6 +435,10 @@ ${tab.url}`.toLocaleLowerCase().includes(query)).slice(0, maxResults);
       });
     case "read_chatgpt_worker":
       return runChatGptWorker(numberParam(params, "tabId", -1), { action: "read" });
+    case "activate_worker_tab":
+      return activateWorkerTab(numberParam(params, "tabId", -1), params.allowNonWorker === true);
+    case "reload_worker_tab":
+      return reloadWorkerTab(numberParam(params, "tabId", -1));
     case "click":
       return runPageAction(numberParam(params, "tabId", -1), { action: "click", target: stringParam(params, "target") });
     case "type":
