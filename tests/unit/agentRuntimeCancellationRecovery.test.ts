@@ -2,28 +2,23 @@ import { expect, it } from "vitest";
 import { AgentRuntime } from "../../src/bridge/agentRuntime.js";
 import type { BrowserClient } from "../../src/bridge/browserClient.js";
 
+type RecoveryReadResult = {
+  ready: boolean;
+  generating: boolean;
+  latestUserText: string;
+  latestAssistantText: string;
+  latestAssistantTruncated: boolean;
+  tab: { tabId: number; windowId: number; active: boolean; discarded: boolean; status: string };
+};
+
 it("keeps cancellation authoritative when a recovery read finishes late", async () => {
   let resolveRecoveryReadStarted!: () => void;
   const recoveryReadStarted = new Promise<void>((resolve) => {
     resolveRecoveryReadStarted = resolve;
   });
 
-  let resolveRecoveryRead!: (value: {
-    ready: boolean;
-    generating: boolean;
-    latestUserText: string;
-    latestAssistantText: string;
-    latestAssistantTruncated: boolean;
-    tab: { tabId: number; windowId: number; active: boolean; discarded: boolean; status: string };
-  }) => void;
-  const recoveryReadResult = new Promise<{
-    ready: boolean;
-    generating: boolean;
-    latestUserText: string;
-    latestAssistantText: string;
-    latestAssistantTruncated: boolean;
-    tab: { tabId: number; windowId: number; active: boolean; discarded: boolean; status: string };
-  }>((resolve) => {
+  let resolveRecoveryRead!: (value: RecoveryReadResult) => void;
+  const recoveryReadResult = new Promise<RecoveryReadResult>((resolve) => {
     resolveRecoveryRead = resolve;
   });
 
