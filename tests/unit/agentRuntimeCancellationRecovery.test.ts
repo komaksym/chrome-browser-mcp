@@ -2,44 +2,40 @@ import { expect, it } from "vitest";
 import { AgentRuntime } from "../../src/bridge/agentRuntime.js";
 import type { BrowserClient } from "../../src/bridge/browserClient.js";
 
-interface Deferred<Value> {
-  promise: Promise<Value>;
-  resolve: (value: Value) => void;
-}
-
-/** Creates a manually-resolved async boundary for deterministic race tests. */
-function deferred<Value>(): Deferred<Value> {
-  let resolve!: (value: Value) => void;
-  const promise = new Promise<Value>((next) => {
-    resolve = next;
-  });
-  return { promise, resolve };
-}
-
-/** Extracts the unique protocol marker from a submitted worker prompt. */
-function completionMarker(prompt: string): string {
-  const marker = prompt.match(/<<<SUBAGENT_DONE:[0-9a-f-]+>>>/i)?.[0];
-  if (!marker) throw new Error(`Missing completion marker in prompt: ${prompt}`);
-  return marker;
-}
-
 it("keeps cancellation authoritative when a recovery read finishes late", async () => {
-  const recoveryReadStarted = deferred<void>();
-  const recoveryReadResult = deferred<{
+  let resolveRecoveryReadStarted!: () => void;
+  const recoveryReadStarted = new Promise<void>((resolve) => {
+    resolveRecoveryReadStarted = resolve;
+  });
+
+  let resolveRecoveryRead!: (value: {
     ready: boolean;
     generating: boolean;
     latestUserText: string;
     latestAssistantText: string;
     latestAssistantTruncated: boolean;
     tab: { tabId: number; windowId: number; active: boolean; discarded: boolean; status: string };
-  }>();
+  }) => void;
+  const recoveryReadResult = new Promise<{
+    ready: boolean;
+    generating: boolean;
+    latestUserText: string;
+    latestAssistantText: string;
+    latestAssistantTruncated: boolean;
+    tab: { tabId: number; windowId: number; active: boolean; discarded: boolean; status: string };
+  }>((resolve) => {
+    resolveRecoveryRead = resolve;
+  });
+
   let submittedPrompt = "";
+  let submissions = 0;
   let reads = 0;
 
   const browser = {
     request: (method: string, args: Record<string, unknown> = {}) => {
       if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
       if (method === "chatgpt_worker_submit") {
+        submissions += 1;
         submittedPrompt = args.prompt as string;
         return Promise.resolve({ submitted: true });
       }
@@ -55,8 +51,8 @@ it("keeps cancellation authoritative when a recovery read finishes late", async 
             tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
           });
         }
-        recoveryReadStarted.resolve();
-        return recoveryReadResult.promise;
+        resolveRecoveryReadStarted();
+        return recoveryReadResult;
       }
       if (method === "get_active_tab") return Promise.resolve({ tab: { tabId: 99 } });
       if (method === "activate_worker_tab") return Promise.resolve({});
@@ -70,20 +66,23 @@ it("keeps cancellation authoritative when a recovery read finishes late", async 
   const spawned = await runtime.spawnAgents([{ agent_id: "cancel-recovery", prompt: "answer once" }], 1);
 
   const collection = runtime.collectAgents(spawned.run_id);
-  await recoveryReadStarted.promise;
+  await recoveryReadStarted;
   const cancellation = runtime.cancelAgents(spawned.run_id);
 
-  recoveryReadResult.resolve({
+  const marker = submittedPrompt.match(/<<<SUBAGENT_DONE:[0-9a-f-]+>>>/i)?.[0];
+  if (!marker) throw new Error(`Missing completion marker in prompt: ${submittedPrompt}`);
+  resolveRecoveryRead({
     ready: true,
     generating: false,
     latestUserText: submittedPrompt,
-    latestAssistantText: `Late recovered result\n${completionMarker(submittedPrompt)}`,
+    latestAssistantText: `Late recovered result\n${marker}`,
     latestAssistantTruncated: false,
     tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
   });
 
   const [collected, cancelled] = await Promise.all([collection, cancellation]);
 
+  expect(submissions).toBe(1);
   expect(collected).toMatchObject({ state: "CANCELLED", barrier: { satisfied: false }, results: [] });
   expect(cancelled).toMatchObject({ jobs: [{ agent_id: "cancel-recovery", state: "CANCELLED" }] });
 });
