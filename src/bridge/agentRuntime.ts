@@ -226,21 +226,6 @@ export class AgentRuntime {
     );
   }
 
-  /** Resolves the run anchor's current window and fails rather than falling back to browser focus. */
-  private async resolveAnchorWindow(run: AgentRun): Promise<number> {
-    const anchor = await this.browser.request<{ tab: { tabId: number; windowId: number } }>("resolve_agent_anchor", {
-      tabId: run.anchorTabId,
-    });
-    if (
-      anchor.tab?.tabId !== run.anchorTabId ||
-      !Number.isInteger(anchor.tab?.windowId) ||
-      anchor.tab.windowId < 0
-    ) {
-      throw new Error("AGENT_ANCHOR_UNAVAILABLE: Parent ChatGPT tab is unavailable");
-    }
-    return anchor.tab.windowId;
-  }
-
   /** Advances one run atomically, returning only marker-validated worker results. */
   async collectAgents(runId: string) {
     const run = this.requireRun(runId);
@@ -377,13 +362,10 @@ export class AgentRuntime {
   private async dispatch(run: AgentRun, job: AgentJob): Promise<void> {
     if (run.cancellationRequested) return;
     try {
-      const windowId = await this.resolveAnchorWindow(run);
       let tabId = job.tabId;
       if (tabId === undefined) {
-        const opened = await this.browser.request<{ tab: { tabId: number } }>("new_tab", {
-          url: "https://chatgpt.com/",
-          active: false,
-          windowId,
+        const opened = await this.browser.request<{ tab: { tabId: number } }>("open_agent_worker_tab", {
+          anchorTabId: run.anchorTabId,
         });
         tabId = opened.tab.tabId;
         if (!Number.isInteger(tabId) || tabId <= 0) {
