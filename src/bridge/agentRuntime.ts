@@ -35,11 +35,13 @@ interface WorkerTabState {
   status: string;
 }
 
+type RecoveryStep = "current_state" | "bounded_reread" | "activate_worker_tab" | "reload_worker_tab";
+
 interface ObservationDiagnostics {
   observation_source?: "initial_read" | "backoff_reread" | "activated_reread" | "reload_reread";
   observation_state?: { ready: boolean; generating: boolean; hasAssistantText: boolean };
   tab?: Pick<WorkerTabState, "active" | "discarded" | "status" | "windowId">;
-  recovery_steps: string[];
+  recovery_steps: RecoveryStep[];
   uncertainty_reason?: string;
 }
 
@@ -270,6 +272,7 @@ export class AgentRuntime {
           task_id: job.taskId,
           state: job.state,
           result: this.verifiedResult(job),
+          ...(job.diagnostics.recovery_steps.length > 0 ? { diagnostics: job.diagnostics } : {}),
         })),
       failed: run.jobs
         .filter((job) => job.state === "FAILED_TERMINAL" || job.state === "FAILED_TRANSIENT")
@@ -533,7 +536,7 @@ export class AgentRuntime {
   }
 
   /** Records one recovery-step failure without replacing the recovery contract's terminal error. */
-  private recordRecoveryFailure(job: AgentJob, step: string, error: unknown): void {
+  private recordRecoveryFailure(job: AgentJob, step: RecoveryStep, error: unknown): void {
     const details = errorDetails(error);
     const previousReason = job.diagnostics.uncertainty_reason ?? "worker result observation remained uncertain";
     job.diagnostics.uncertainty_reason =
@@ -544,12 +547,14 @@ export class AgentRuntime {
   private async recoveryAttempt<Value>(
     run: AgentRun,
     job: AgentJob,
-    step: string,
+    step: RecoveryStep,
     operation: () => Value | Promise<Value>,
   ): Promise<Value | undefined> {
     try {
       return await operation();
     } catch (error) {
+      const details = errorDetails(error);
+      if (details.code === "WORKER_IDENTITY_MISMATCH") throw error;
       if (!run.cancellationRequested) this.recordRecoveryFailure(job, step, error);
       return undefined;
     }
@@ -597,8 +602,9 @@ export class AgentRuntime {
     }
 
     job.diagnostics.recovery_steps.push("activate_worker_tab");
+    let activated: WorkerReadResult | undefined;
     try {
-      await this.recoveryAttempt(run, job, "activate_worker_tab", async () => {
+      activated = await this.recoveryAttempt(run, job, "activate_worker_tab", async () => {
         await this.browser.request("activate_worker_tab", { tabId });
         return this.rereadWithBackoff(run, job, "activated_reread", 2);
       });
@@ -607,7 +613,7 @@ export class AgentRuntime {
     }
     if (run.cancellationRequested || Boolean(job.result)) return;
 
-    const latest = job.bestObservation ?? reread ?? initial;
+    const latest = activated ?? reread ?? initial;
     if (this.generationDefinitelyFinished(latest)) {
       job.diagnostics.recovery_steps.push("reload_worker_tab");
       await this.recoveryAttempt(run, job, "reload_worker_tab", async () => {
