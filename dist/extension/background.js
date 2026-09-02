@@ -334,7 +334,9 @@ async function runChatGptWorker(tabId, command) {
   return { ...result, tab: serializeTab(tab) };
 }
 async function activateWorkerTab(tabId, allowNonWorker = false) {
-  const tab = await getValidatedReadableTab(tabId, !allowNonWorker);
+  const tab = allowNonWorker ? await chrome.tabs.get(tabId) : await getValidatedReadableTab(tabId);
+  if (tab.id === void 0) throw new Error("TAB_NOT_FOUND: Tab has no ID");
+  if (tab.incognito) throw new Error("INCOGNITO_DISABLED: Incognito tabs are excluded");
   await chrome.windows.update(tab.windowId, { focused: true });
   const updated = await chrome.tabs.update(tabId, { active: true });
   if (!updated) throw new Error("TAB_NOT_FOUND: Could not activate worker tab");
