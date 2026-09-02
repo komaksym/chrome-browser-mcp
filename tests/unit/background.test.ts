@@ -187,6 +187,28 @@ describe("extension background worker commands", () => {
     expect(response).toMatchObject({ error: { code: "ANCHOR_UNAVAILABLE" } });
   });
 
+  it("creates a tab in the explicitly requested window", async () => {
+    (chromeApi.tabs.create as unknown as { mockResolvedValue: (value: chrome.tabs.Tab) => void }).mockResolvedValue({
+      id: 88,
+      url: "https://chatgpt.com/",
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 9,
+      index: 0,
+    } as chrome.tabs.Tab);
+
+    const response = await request("new_tab", { url: "https://chatgpt.com/", active: false, windowId: 9 });
+
+    expect(response.error).toBeUndefined();
+    expect(chromeApi.tabs.create).toHaveBeenCalledWith({
+      url: "https://chatgpt.com/",
+      active: false,
+      windowId: 9,
+    });
+  });
+
   it("opens an agent worker in the stored parent window with the parent as opener", async () => {
     const parent = {
       id: 47,
