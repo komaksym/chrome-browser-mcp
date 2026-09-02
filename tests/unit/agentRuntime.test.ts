@@ -32,6 +32,7 @@ describe("AgentRuntime", () => {
  let tabOpenCalls = 0;
  const browser = {
  request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
  if (method === "new_tab") {
  tabOpenCalls += 1;
  if (tabOpenCalls === 1) return Promise.resolve({ tab: { tabId: 1 } });
@@ -103,6 +104,7 @@ describe("AgentRuntime", () => {
  let submittedPrompt = "";
  const browser = {
  request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
  if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
  if (method === "chatgpt_worker_submit") {
  submittedPrompt = args.prompt as string;
@@ -139,6 +141,7 @@ describe("AgentRuntime", () => {
  let submittedPrompt = "";
  const browser = {
  request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
  if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
  if (method === "chatgpt_worker_submit") {
  submittedPrompt = args.prompt as string;
@@ -177,6 +180,7 @@ describe("AgentRuntime", () => {
  const closeCalls: number[] = [];
  const browser = {
  request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
  if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
  if (method === "chatgpt_worker_submit") {
  submittedPrompt = args.prompt as string;
@@ -471,5 +475,132 @@ describe("AgentRuntime", () => {
  }],
  });
  });
+
+  it("pins queued workers to the anchor tab's current window and follows tab moves", async () => {
+    const openedWindows: number[] = [];
+    const submitted = new Map<number, string>();
+    let anchorWindowId = 3;
+    let nextTabId = 101;
+    const browser = {
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") {
+          return Promise.resolve({ tab: { tabId: 55, windowId: anchorWindowId } });
+        }
+        if (method === "new_tab") {
+          openedWindows.push(args.windowId as number);
+          return Promise.resolve({ tab: { tabId: nextTabId++ } });
+        }
+        if (method === "chatgpt_worker_submit") {
+          submitted.set(args.tabId as number, args.prompt as string);
+          return Promise.resolve({ submitted: true });
+        }
+        if (method === "read_chatgpt_worker") {
+          const prompt = submitted.get(args.tabId as number);
+          if (!prompt) throw new Error("missing prompt");
+          return Promise.resolve({
+            ready: true,
+            generating: false,
+            latestUserText: prompt,
+            latestAssistantText: `Done\n${completionMarker(prompt)}`,
+          });
+        }
+        if (method === "close_tab") return Promise.resolve({ closed: true });
+        return Promise.resolve({});
+      },
+    } as BrowserClient;
+    const runtime = new AgentRuntime(browser);
+
+    const spawned = await runtime.spawnAgents(
+      [
+        { agent_id: "first", prompt: "first" },
+        { agent_id: "second", prompt: "second" },
+      ],
+      1,
+    );
+    expect(openedWindows).toEqual([3]);
+
+    anchorWindowId = 8;
+    await runtime.collectAgents(spawned.run_id);
+    expect(openedWindows).toEqual([3, 8]);
+  });
+
+  it("fails queued work with ANCHOR_UNAVAILABLE instead of opening in an arbitrary window", async () => {
+    let anchorAvailable = true;
+    let openedTabs = 0;
+    const submitted = new Map<number, string>();
+    const browser = {
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") {
+          if (!anchorAvailable && "anchorTabId" in args) {
+            return Promise.reject(new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer available"));
+          }
+          return Promise.resolve({ tab: { tabId: 55, windowId: 3 } });
+        }
+        if (method === "new_tab") {
+          openedTabs += 1;
+          return Promise.resolve({ tab: { tabId: openedTabs } });
+        }
+        if (method === "chatgpt_worker_submit") {
+          submitted.set(args.tabId as number, args.prompt as string);
+          return Promise.resolve({ submitted: true });
+        }
+        if (method === "read_chatgpt_worker") {
+          const prompt = submitted.get(args.tabId as number);
+          if (!prompt) throw new Error("missing prompt");
+          return Promise.resolve({
+            ready: true,
+            generating: false,
+            latestUserText: prompt,
+            latestAssistantText: `Done\n${completionMarker(prompt)}`,
+          });
+        }
+        if (method === "close_tab") return Promise.resolve({ closed: true });
+        return Promise.resolve({});
+      },
+    } as BrowserClient;
+    const runtime = new AgentRuntime(browser);
+
+    const spawned = await runtime.spawnAgents(
+      [
+        { agent_id: "first", prompt: "first" },
+        { agent_id: "second", prompt: "second" },
+      ],
+      1,
+    );
+    anchorAvailable = false;
+    const collected = await runtime.collectAgents(spawned.run_id);
+
+    expect(openedTabs).toBe(1);
+    expect(collected.failed).toEqual([
+      expect.objectContaining({
+        agent_id: "second",
+        state: "FAILED_TERMINAL",
+        error: expect.objectContaining({ code: "ANCHOR_UNAVAILABLE", retryable: false }),
+      }),
+    ]);
+  });
+
+  it("excludes runtime-owned worker tabs when resolving the anchor for a new run", async () => {
+    const anchorRequests: Record<string, unknown>[] = [];
+    let nextTabId = 20;
+    const browser = {
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") {
+          anchorRequests.push(args);
+          return Promise.resolve({ tab: { tabId: 7, windowId: 2 } });
+        }
+        if (method === "new_tab") return Promise.resolve({ tab: { tabId: nextTabId++ } });
+        if (method === "chatgpt_worker_submit") return Promise.resolve({ submitted: true });
+        return Promise.resolve({});
+      },
+    } as BrowserClient;
+    const runtime = new AgentRuntime(browser);
+
+    await runtime.spawnAgents([{ agent_id: "first", prompt: "first" }], 1);
+    await runtime.spawnAgents([{ agent_id: "second", prompt: "second" }], 1);
+
+    expect(anchorRequests[0]).toEqual({ excludedTabIds: [] });
+    expect(anchorRequests[2]).toEqual({ excludedTabIds: [20] });
+  });
 
 });
