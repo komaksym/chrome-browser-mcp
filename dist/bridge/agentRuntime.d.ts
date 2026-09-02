@@ -1,9 +1,28 @@
 import { type BrowserClient } from "./browserClient.js";
-type AgentState = "CREATED" | "DISPATCHED" | "GENERATING" | "VERIFIED_DONE" | "FAILED_TRANSIENT" | "FAILED_TERMINAL" | "CANCELLED";
+type AgentState = "CREATED" | "DISPATCHED" | "GENERATING" | "OBSERVATION_UNCERTAIN" | "VERIFIED_DONE" | "FAILED_TRANSIENT" | "FAILED_TERMINAL" | "CANCELLED";
 /** Describes one caller-provided task assigned to a browser-backed worker. */
 export interface AgentTaskInput {
     agent_id: string;
     prompt: string;
+}
+interface WorkerTabState {
+    tabId: number;
+    windowId: number;
+    active: boolean;
+    discarded: boolean;
+    status: string;
+}
+type RecoveryStep = "current_state" | "bounded_reread" | "activate_worker_tab" | "reload_worker_tab";
+interface ObservationDiagnostics {
+    observation_source?: "initial_read" | "backoff_reread" | "activated_reread" | "reload_reread";
+    observation_state?: {
+        ready: boolean;
+        generating: boolean;
+        hasAssistantText: boolean;
+    };
+    tab?: Pick<WorkerTabState, "active" | "discarded" | "status" | "windowId">;
+    recovery_steps: RecoveryStep[];
+    uncertainty_reason?: string;
 }
 interface AgentError {
     code: string;
@@ -28,6 +47,7 @@ export declare class AgentRuntime {
         run_id: string;
         state: "CANCELLED" | "RUNNING" | "COMPLETE" | "FAILED";
         jobs: {
+            diagnostics?: ObservationDiagnostics | undefined;
             error?: AgentError | undefined;
             job_id: string;
             agent_id: string;
@@ -45,6 +65,7 @@ export declare class AgentRuntime {
             satisfied: boolean;
         };
         results: {
+            diagnostics?: ObservationDiagnostics | undefined;
             job_id: string;
             agent_id: string;
             task_id: string;
@@ -52,6 +73,7 @@ export declare class AgentRuntime {
             result: AgentResult;
         }[];
         failed: {
+            diagnostics?: ObservationDiagnostics | undefined;
             error?: AgentError | undefined;
             job_id: string;
             agent_id: string;
@@ -59,6 +81,7 @@ export declare class AgentRuntime {
             state: AgentState;
         }[];
         pending: {
+            diagnostics?: ObservationDiagnostics | undefined;
             error?: AgentError | undefined;
             job_id: string;
             agent_id: string;
@@ -71,6 +94,7 @@ export declare class AgentRuntime {
         run_id: string;
         cancelled: boolean;
         jobs: {
+            diagnostics?: ObservationDiagnostics | undefined;
             error?: AgentError | undefined;
             job_id: string;
             agent_id: string;
@@ -106,6 +130,22 @@ export declare class AgentRuntime {
     private closeWorkerTab;
     /** Submits a prompt with bounded retries while recognizing a lost acknowledgement idempotently. */
     private submitWithRetry;
+    /** Records the latest worker observation and its browser metadata for recovery diagnostics. */
+    private rememberObservation;
+    /** Returns true only when the browser observation proves generation has stopped with assistant output present. */
+    private generationDefinitelyFinished;
+    /** Validates one observation and completes the job when the exact dispatched turn and marker are present. */
+    private acceptObservation;
+    /** Reads the same worker turn with bounded backoff and never submits another prompt. */
+    private rereadWithBackoff;
+    /** Records one recovery-step failure without replacing the recovery contract's terminal error. */
+    private recordRecoveryFailure;
+    /** Runs one recovery step without allowing its error to escape into generic job failure handling. */
+    private recoveryAttempt;
+    /** Restores the previously active normal tab after activation-based worker recovery when possible. */
+    private restoreActiveTab;
+    /** Runs the bounded observation-only recovery ladder for a finished turn whose marker was not observed. */
+    private recoverFinishedObservation;
     /** Reads and validates one worker response before exposing its bounded untrusted result. */
     private collectJob;
 }

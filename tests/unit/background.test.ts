@@ -11,6 +11,8 @@ let nativeMessageListener: ((message: unknown) => void) | undefined;
 const nativeMessages: unknown[] = [];
 const tabs = new Map<number, chrome.tabs.Tab>();
 const executeScript = vi.fn();
+const updateTab = vi.fn();
+const updateWindow = vi.fn();
 
 const chromeApi = {
   runtime: {
@@ -31,9 +33,10 @@ const chromeApi = {
     },
     query: vi.fn(),
     create: vi.fn(),
-    update: vi.fn(),
+    update: updateTab,
     remove: vi.fn(),
   },
+  windows: { update: updateWindow },
   scripting: { executeScript },
 } as unknown as typeof chrome;
 
@@ -65,10 +68,35 @@ describe("extension background worker commands", () => {
     nativeMessages.splice(0);
     tabs.clear();
     executeScript.mockReset();
+    updateTab.mockReset();
+    updateWindow.mockReset();
   });
 
   afterAll(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("restores a prior normal tab even when its URL is not HTTP(S)", async () => {
+    const priorTab = {
+      id: 12,
+      url: "chrome://settings/",
+      status: "complete",
+      incognito: false,
+      active: true,
+      pinned: false,
+      discarded: false,
+      windowId: 3,
+      index: 0,
+    } as chrome.tabs.Tab;
+    tabs.set(12, priorTab);
+    updateWindow.mockResolvedValue({});
+    updateTab.mockResolvedValue({ ...priorTab, active: true });
+
+    const response = await request("activate_worker_tab", { tabId: 12, allowNonWorker: true });
+
+    expect(response.error).toBeUndefined();
+    expect(updateWindow).toHaveBeenCalledWith(3, { focused: true });
+    expect(updateTab).toHaveBeenCalledWith(12, { active: true });
   });
 
   it("treats a ChatGPT tab with only a pending URL as transient navigation progress", async () => {

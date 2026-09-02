@@ -5,6 +5,7 @@ type AgentState =
   | "CREATED"
   | "DISPATCHED"
   | "GENERATING"
+  | "OBSERVATION_UNCERTAIN"
   | "VERIFIED_DONE"
   | "FAILED_TRANSIENT"
   | "FAILED_TERMINAL"
@@ -23,6 +24,25 @@ interface WorkerReadResult {
   latestUserTruncated?: boolean;
   latestAssistantText: string | null;
   latestAssistantTruncated?: boolean;
+  tab?: WorkerTabState;
+}
+
+interface WorkerTabState {
+  tabId: number;
+  windowId: number;
+  active: boolean;
+  discarded: boolean;
+  status: string;
+}
+
+type RecoveryStep = "current_state" | "bounded_reread" | "activate_worker_tab" | "reload_worker_tab";
+
+interface ObservationDiagnostics {
+  observation_source?: "initial_read" | "backoff_reread" | "activated_reread" | "reload_reread";
+  observation_state?: { ready: boolean; generating: boolean; hasAssistantText: boolean };
+  tab?: Pick<WorkerTabState, "active" | "discarded" | "status" | "windowId">;
+  recovery_steps: RecoveryStep[];
+  uncertainty_reason?: string;
 }
 
 interface AgentJob {
@@ -38,6 +58,8 @@ interface AgentJob {
   tabId?: number;
   result?: AgentResult;
   error?: AgentError;
+  bestObservation?: WorkerReadResult;
+  diagnostics: ObservationDiagnostics;
 }
 
 interface AgentRun {
@@ -121,6 +143,9 @@ function publicJob(job: AgentJob) {
     task_id: job.taskId,
     state: job.state,
     ...(job.error ? { error: job.error } : {}),
+    ...(job.diagnostics.recovery_steps.length > 0 || job.diagnostics.uncertainty_reason
+      ? { diagnostics: job.diagnostics }
+      : {}),
   };
 }
 
@@ -163,6 +188,7 @@ export class AgentRuntime {
         submittedPrompt: buildWorkerPrompt(identity, task.prompt),
         submitted: false,
         transientFailures: 0,
+        diagnostics: { recovery_steps: [] },
         state: "CREATED" as const,
       };
     });
@@ -192,7 +218,9 @@ export class AgentRuntime {
         await this.cancelRun(run);
       } else {
         await this.retryTransientJobs(run);
-        const active = run.jobs.filter((job) => job.state === "DISPATCHED" || job.state === "GENERATING");
+        const active = run.jobs.filter(
+          (job) => job.state === "DISPATCHED" || job.state === "GENERATING" || job.state === "OBSERVATION_UNCERTAIN",
+        );
         await Promise.all(active.map((job) => this.collectJob(run, job)));
         if (run.cancellationRequested) await this.cancelRun(run);
         else await this.fillSlots(run);
@@ -244,12 +272,19 @@ export class AgentRuntime {
           task_id: job.taskId,
           state: job.state,
           result: this.verifiedResult(job),
+          ...(job.diagnostics.recovery_steps.length > 0 ? { diagnostics: job.diagnostics } : {}),
         })),
       failed: run.jobs
         .filter((job) => job.state === "FAILED_TERMINAL" || job.state === "FAILED_TRANSIENT")
         .map(publicJob),
       pending: run.jobs
-        .filter((job) => job.state === "CREATED" || job.state === "DISPATCHED" || job.state === "GENERATING")
+        .filter(
+          (job) =>
+            job.state === "CREATED" ||
+            job.state === "DISPATCHED" ||
+            job.state === "GENERATING" ||
+            job.state === "OBSERVATION_UNCERTAIN",
+        )
         .map(publicJob),
     };
   }
@@ -277,6 +312,7 @@ export class AgentRuntime {
     return (
       job.state === "DISPATCHED" ||
       job.state === "GENERATING" ||
+      job.state === "OBSERVATION_UNCERTAIN" ||
       (job.state === "FAILED_TRANSIENT" && job.tabId !== undefined)
     );
   }
@@ -308,7 +344,7 @@ export class AgentRuntime {
 
   /** Opens a private worker tab when needed and submits the job's protocol-bound prompt. */
   private async dispatch(run: AgentRun, job: AgentJob): Promise<void> {
-    if (run.cancellationRequested || job.state === "CANCELLED") return;
+    if (run.cancellationRequested) return;
     try {
       let tabId = job.tabId;
       if (tabId === undefined) {
@@ -336,7 +372,7 @@ export class AgentRuntime {
 
   /** Records a failure or closes the job permanently after its transient retry budget is exhausted. */
   private async failJob(run: AgentRun, job: AgentJob, error: unknown): Promise<void> {
-    if (run.cancellationRequested || job.state === "CANCELLED") return;
+    if (run.cancellationRequested) return;
     const details = errorDetails(error);
     if (details.retryable) {
       job.transientFailures += 1;
@@ -414,15 +450,198 @@ export class AgentRuntime {
     throw lastError instanceof Error ? lastError : new Error("CHATGPT_NOT_READY: worker submission retries exhausted");
   }
 
+  /** Records the latest worker observation and its browser metadata for recovery diagnostics. */
+  private rememberObservation(
+    job: AgentJob,
+    worker: WorkerReadResult,
+    source: ObservationDiagnostics["observation_source"],
+  ): void {
+    const previous = job.bestObservation;
+    if (
+      !previous ||
+      !this.generationDefinitelyFinished(previous) ||
+      this.generationDefinitelyFinished(worker)
+    ) {
+      job.bestObservation = worker;
+    }
+    job.diagnostics.observation_source = source;
+    job.diagnostics.observation_state = {
+      ready: worker.ready,
+      generating: worker.generating,
+      hasAssistantText: Boolean(worker.latestAssistantText),
+    };
+    if (worker.tab) {
+      job.diagnostics.tab = {
+        active: worker.tab.active,
+        discarded: worker.tab.discarded,
+        status: worker.tab.status,
+        windowId: worker.tab.windowId,
+      };
+    }
+  }
+
+  /** Returns true only when the browser observation proves generation has stopped with assistant output present. */
+  private generationDefinitelyFinished(worker: WorkerReadResult): boolean {
+    return worker.ready && !worker.generating && Boolean(worker.latestAssistantText);
+  }
+
+  /** Validates one observation and completes the job when the exact dispatched turn and marker are present. */
+  private acceptObservation(job: AgentJob, worker: WorkerReadResult): boolean {
+    if (!this.generationDefinitelyFinished(worker)) return false;
+    if (worker.latestUserTruncated || worker.latestUserText !== job.submittedPrompt) {
+      throw new Error("WORKER_IDENTITY_MISMATCH: latest user message does not match the dispatched job");
+    }
+    const fullText = worker.latestAssistantText!.trimEnd();
+    if (!fullText.endsWith(job.completionMarker)) return false;
+    const bounded = boundedWorkerResult(fullText.slice(0, -job.completionMarker.length).trimEnd());
+    job.result = {
+      type: "text",
+      text: bounded.text,
+      contentIsUntrusted: true,
+      warning: WORKER_RESULT_WARNING,
+      truncated: Boolean(worker.latestAssistantTruncated) || bounded.truncated,
+    };
+    job.error = undefined;
+    if (job.diagnostics.recovery_steps.length === 0) job.diagnostics.uncertainty_reason = undefined;
+    job.state = "VERIFIED_DONE";
+    return true;
+  }
+
+  /** Reads the same worker turn with bounded backoff and never submits another prompt. */
+  private async rereadWithBackoff(
+    run: AgentRun,
+    job: AgentJob,
+    source: ObservationDiagnostics["observation_source"],
+    attempts: number,
+  ): Promise<WorkerReadResult | undefined> {
+    const tabId = job.tabId;
+    if (tabId === undefined) return undefined;
+    let latest: WorkerReadResult | undefined;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (run.cancellationRequested) return undefined;
+      if (attempt > 0) await new Promise<void>((resolve) => setTimeout(resolve, 50 * 2 ** (attempt - 1)));
+      if (run.cancellationRequested) return undefined;
+      try {
+        latest = await this.browser.request<WorkerReadResult>("read_chatgpt_worker", { tabId });
+        if (run.cancellationRequested) return undefined;
+        this.rememberObservation(job, latest, source);
+        if (this.acceptObservation(job, latest)) return latest;
+      } catch (error) {
+        const details = errorDetails(error);
+        job.error = details;
+        if (!details.retryable) throw error;
+      }
+    }
+    return latest;
+  }
+
+  /** Records one recovery-step failure without replacing the recovery contract's terminal error. */
+  private recordRecoveryFailure(job: AgentJob, step: RecoveryStep, error: unknown): void {
+    const details = errorDetails(error);
+    const previousReason = job.diagnostics.uncertainty_reason ?? "worker result observation remained uncertain";
+    job.diagnostics.uncertainty_reason =
+      `${previousReason}; ${step} failed (${details.code}): ${details.message}`;
+  }
+
+  /** Runs one recovery step without allowing its error to escape into generic job failure handling. */
+  private async recoveryAttempt<Value>(
+    run: AgentRun,
+    job: AgentJob,
+    step: RecoveryStep,
+    operation: () => Value | Promise<Value>,
+  ): Promise<Value | undefined> {
+    try {
+      return await operation();
+    } catch (error) {
+      const details = errorDetails(error);
+      if (details.code === "WORKER_IDENTITY_MISMATCH") throw error;
+      if (!run.cancellationRequested) this.recordRecoveryFailure(job, step, error);
+      return undefined;
+    }
+  }
+
+  /** Restores the previously active normal tab after activation-based worker recovery when possible. */
+  private async restoreActiveTab(tabId: number | undefined): Promise<void> {
+    if (tabId === undefined) return;
+    try {
+      await this.browser.request("activate_worker_tab", { tabId, allowNonWorker: true });
+    } catch {
+      // Restoration is best-effort; recovery outcome must not be replaced by a focus error.
+    }
+  }
+
+  /** Runs the bounded observation-only recovery ladder for a finished turn whose marker was not observed. */
+  private async recoverFinishedObservation(
+    run: AgentRun,
+    job: AgentJob,
+    initial: WorkerReadResult,
+  ): Promise<void> {
+    const tabId = job.tabId;
+    if (tabId === undefined) return;
+    job.state = "OBSERVATION_UNCERTAIN";
+    job.diagnostics.uncertainty_reason = "completion marker missing after generation appeared finished";
+    job.diagnostics.recovery_steps = ["current_state"];
+
+    const currentAccepted = await this.recoveryAttempt(run, job, "current_state", () =>
+      this.acceptObservation(job, job.bestObservation ?? initial),
+    );
+    if (run.cancellationRequested || currentAccepted || Boolean(job.result)) return;
+
+    job.diagnostics.recovery_steps.push("bounded_reread");
+    const reread = await this.recoveryAttempt(run, job, "bounded_reread", () =>
+      this.rereadWithBackoff(run, job, "backoff_reread", 3),
+    );
+    if (run.cancellationRequested || Boolean(job.result)) return;
+
+    let previousActiveTabId: number | undefined;
+    try {
+      const active = await this.browser.request<{ tab: { tabId: number } }>("get_active_tab");
+      previousActiveTabId = active.tab.tabId;
+    } catch {
+      // Active-tab restoration metadata is optional.
+    }
+
+    job.diagnostics.recovery_steps.push("activate_worker_tab");
+    let activated: WorkerReadResult | undefined;
+    try {
+      activated = await this.recoveryAttempt(run, job, "activate_worker_tab", async () => {
+        await this.browser.request("activate_worker_tab", { tabId });
+        return this.rereadWithBackoff(run, job, "activated_reread", 2);
+      });
+    } finally {
+      await this.restoreActiveTab(previousActiveTabId);
+    }
+    if (run.cancellationRequested || Boolean(job.result)) return;
+
+    const latest = activated ?? reread ?? initial;
+    if (this.generationDefinitelyFinished(latest)) {
+      job.diagnostics.recovery_steps.push("reload_worker_tab");
+      await this.recoveryAttempt(run, job, "reload_worker_tab", async () => {
+        await this.browser.request("reload_worker_tab", { tabId });
+        return this.rereadWithBackoff(run, job, "reload_reread", 4);
+      });
+    }
+    if (run.cancellationRequested || Boolean(job.result)) return;
+
+    job.error = {
+      code: "RECOVERY_EXHAUSTED",
+      message: "Finished worker result could not be verified after bounded observation recovery",
+      retryable: false,
+    };
+    job.state = "FAILED_TERMINAL";
+    await this.closeWorkerTab(job);
+  }
+
   /** Reads and validates one worker response before exposing its bounded untrusted result. */
   private async collectJob(run: AgentRun, job: AgentJob): Promise<void> {
     const tabId = job.tabId;
-    if (tabId === undefined || run.cancellationRequested || job.state === "CANCELLED") return;
+    if (tabId === undefined || run.cancellationRequested) return;
     try {
       const worker = await this.browser.request<WorkerReadResult>("read_chatgpt_worker", { tabId });
       if (run.cancellationRequested) return;
       job.error = undefined;
       job.transientFailures = 0;
+      this.rememberObservation(job, worker, "initial_read");
       if (!worker.ready || worker.generating || !worker.latestAssistantText) {
         job.state = "GENERATING";
         return;
@@ -430,22 +649,12 @@ export class AgentRuntime {
       if (worker.latestUserTruncated || worker.latestUserText !== job.submittedPrompt) {
         throw new Error("WORKER_IDENTITY_MISMATCH: latest user message does not match the dispatched job");
       }
-      const fullText = worker.latestAssistantText.trimEnd();
-      if (!fullText.endsWith(job.completionMarker)) {
-        throw new Error("COMPLETION_MARKER_MISSING: worker stopped without the expected completion marker");
-      }
-      const bounded = boundedWorkerResult(fullText.slice(0, -job.completionMarker.length).trimEnd());
-      job.result = {
-        type: "text",
-        text: bounded.text,
-        contentIsUntrusted: true,
-        warning: WORKER_RESULT_WARNING,
-        truncated: Boolean(worker.latestAssistantTruncated) || bounded.truncated,
-      };
-      job.error = undefined;
-      job.state = "VERIFIED_DONE";
+      if (this.acceptObservation(job, worker)) return;
+      await this.recoverFinishedObservation(run, job, worker);
     } catch (error) {
+      if (run.cancellationRequested) return;
       await this.failJob(run, job, error);
     }
   }
+
 }

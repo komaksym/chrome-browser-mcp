@@ -1,4 +1,4 @@
-export type BrowserMethod = "browser_status" | "list_tabs" | "get_active_tab" | "read_tab" | "read_tabs" | "search_tabs" | "click" | "type" | "press_key" | "scroll" | "navigate" | "new_tab" | "close_tab" | "select_option" | "chatgpt_worker_submit" | "read_chatgpt_worker";
+export type BrowserMethod = "browser_status" | "list_tabs" | "get_active_tab" | "read_tab" | "read_tabs" | "search_tabs" | "click" | "type" | "press_key" | "scroll" | "navigate" | "new_tab" | "close_tab" | "select_option" | "chatgpt_worker_submit" | "read_chatgpt_worker" | "activate_worker_tab" | "reload_worker_tab";
 export interface NativeRequest {
     type: "request";
     id: string;

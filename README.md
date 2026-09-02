@@ -2,7 +2,7 @@
 
 A local bridge that lets a private ChatGPT developer-mode app inspect and control the tabs already open in your desktop Google Chrome.
 
-Current patch version: **0.1.3**. Every patch must bump this version; CI rejects patches that do not.
+Current patch version: **0.1.4**. Every patch must bump this version; CI rejects patches that do not.
 
 The bridge exposes 18 MCP tools:
 
@@ -22,11 +22,11 @@ The end-to-end test launches a real Chromium process with the unpacked Manifest 
 
 ```text
 MCP client
-  -> http://127.0.0.1:2091/mcp
-  -> native host process
-  -> Chrome Native Messaging
-  -> MV3 extension
-  -> live Chrome tabs
+ -> http://127.0.0.1:2091/mcp
+ -> native host process
+ -> Chrome Native Messaging
+ -> MV3 extension
+ -> live Chrome tabs
 ```
 
 Run every gate:
@@ -40,20 +40,20 @@ npm run check
 
 ```text
 ChatGPT developer-mode app
-          |
-          | OpenAI Secure MCP Tunnel (outbound HTTPS)
-          v
+ |
+ | OpenAI Secure MCP Tunnel (outbound HTTPS)
+ v
 127.0.0.1:2091/mcp
-          |
-          | same local Node process
-          v
+ |
+ | same local Node process
+ v
 Chrome Native Messaging host
-          |
-          v
+ |
+ v
 Chrome MV3 extension
-          |
-          +-- chrome.tabs
-          +-- chrome.scripting (isolated-world reads + actions)
+ |
+ +-- chrome.tabs
+ +-- chrome.scripting (isolated-world reads + actions)
 ```
 
 Chrome starts the native host when the extension connects. The native host starts the loopback MCP endpoint. Therefore Chrome must be open and the extension must be enabled whenever ChatGPT uses the app.
@@ -107,7 +107,7 @@ Then open `chrome://extensions` and click **Update**. Do not select the extensio
 
 `git pull` updates both `dist/extension` (what Chrome loads) and `dist/bridge` (what the native host executes). Clicking **Update** reloads the unpacked extension/native-messaging connection so the newly pulled runtime is used.
 
-The visible extension version must change on every patch. For this patch it must show **0.1.3**. If it still shows an older version, the pulled runtime was not applied.
+The visible extension version must change on every patch. For this patch it must show **0.1.4**. If it still shows an older version, the pulled runtime was not applied.
 
 ## 3. Verify the local browser chain
 

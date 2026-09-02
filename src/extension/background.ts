@@ -1,24 +1,8 @@
+import type { BrowserMethod } from "../bridge/types.js";
 import { performPageAction, type PageAction } from "./actions.js";
 import { extractPage } from "./extractor.js";
 import { runChatGptWorkerCommand, type ChatGptWorkerCommand } from "./chatgptWorker.js";
 
-type BrowserMethod =
-  | "browser_status"
-  | "list_tabs"
-  | "get_active_tab"
-  | "read_tab"
-  | "read_tabs"
-  | "search_tabs"
-  | "click"
-  | "type"
-  | "press_key"
-  | "scroll"
-  | "navigate"
-  | "new_tab"
-  | "close_tab"
-  | "select_option"
-  | "chatgpt_worker_submit"
-  | "read_chatgpt_worker";
 
 interface NativeRequest {
   type: "request";
@@ -105,6 +89,16 @@ async function listTabs(windowId?: number) {
   return tabs.filter((tab) => !tab.incognito).map(serializeTab);
 }
 
+/** Returns one readable tab and optionally requires the ChatGPT worker origin. */
+async function getValidatedReadableTab(tabId: number, requireWorkerOrigin = true) {
+  const tab = await chrome.tabs.get(tabId);
+  assertReadableTab(tab);
+  if (requireWorkerOrigin && new URL(resolveTabUrl(tab)).hostname !== "chatgpt.com") {
+    throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
+  }
+  return tab;
+}
+
 /** Extracts bounded visible page data from one normal readable browser tab. */
 async function readTab(tabId: number, offset: number, maxCharacters: number, includeLinks: boolean) {
   const tab = await chrome.tabs.get(tabId);
@@ -130,12 +124,7 @@ async function readTab(tabId: number, offset: number, maxCharacters: number, inc
 
 /** Runs an internal worker command after ChatGPT navigation is committed and safe to inject into. */
 async function runChatGptWorker(tabId: number, command: ChatGptWorkerCommand) {
-  const tab = await chrome.tabs.get(tabId);
-  assertReadableTab(tab);
-  const url = resolveTabUrl(tab);
-  if (new URL(url).hostname !== "chatgpt.com") {
-    throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
-  }
+  const tab = await getValidatedReadableTab(tabId);
   if (!tab.url || tab.status === "loading") {
     throw new Error("NAVIGATION_IN_PROGRESS: ChatGPT worker tab is still navigating");
   }
@@ -147,7 +136,25 @@ async function runChatGptWorker(tabId: number, command: ChatGptWorkerCommand) {
   });
   const result = injection[0]?.result;
   if (!result) throw new Error("EXTRACTION_FAILED: No ChatGPT worker result returned");
-  return result;
+  return { ...result, tab: serializeTab(tab) };
+}
+
+/** Activates one ChatGPT worker tab for recovery and returns its current metadata. */
+async function activateWorkerTab(tabId: number, allowNonWorker = false) {
+  const tab = allowNonWorker ? await chrome.tabs.get(tabId) : await getValidatedReadableTab(tabId);
+  if (tab.id === undefined) throw new Error("TAB_NOT_FOUND: Tab has no ID");
+  if (tab.incognito) throw new Error("INCOGNITO_DISABLED: Incognito tabs are excluded");
+  await chrome.windows.update(tab.windowId, { focused: true });
+  const updated = await chrome.tabs.update(tabId, { active: true });
+  if (!updated) throw new Error("TAB_NOT_FOUND: Could not activate worker tab");
+  return { tab: serializeTab(updated) };
+}
+
+/** Reloads one finished ChatGPT worker tab for read recovery without submitting anything. */
+async function reloadWorkerTab(tabId: number) {
+  await getValidatedReadableTab(tabId);
+  await chrome.tabs.reload(tabId);
+  return { tab: serializeTab(await chrome.tabs.get(tabId)) };
 }
 
 /** Executes one constrained DOM action in a normal readable browser tab. */
@@ -243,6 +250,10 @@ async function execute(method: BrowserMethod, params: Record<string, unknown>): 
       });
     case "read_chatgpt_worker":
       return runChatGptWorker(numberParam(params, "tabId", -1), { action: "read" });
+    case "activate_worker_tab":
+      return activateWorkerTab(numberParam(params, "tabId", -1), params.allowNonWorker === true);
+    case "reload_worker_tab":
+      return reloadWorkerTab(numberParam(params, "tabId", -1));
     case "click":
       return runPageAction(numberParam(params, "tabId", -1), { action: "click", target: stringParam(params, "target") });
     case "type":
