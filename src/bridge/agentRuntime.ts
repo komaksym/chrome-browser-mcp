@@ -64,6 +64,7 @@ interface AgentJob {
 
 interface AgentRun {
   runId: string;
+  anchorTabId: number;
   maxConcurrency: number;
   jobs: AgentJob[];
   operation: Promise<void>;
@@ -174,6 +175,17 @@ export class AgentRuntime {
       seen.add(task.agent_id);
     }
 
+    const workerTabIds = [...this.runs.values()].flatMap((run) =>
+      run.jobs.flatMap((job) => (job.tabId === undefined ? [] : [job.tabId])),
+    );
+    const anchor = await this.browser.request<{ tab: { tabId: number } }>("resolve_chatgpt_anchor", {
+      excludedTabIds: workerTabIds,
+    });
+    const anchorTabId = anchor.tab?.tabId;
+    if (!Number.isInteger(anchorTabId) || anchorTabId <= 0) {
+      throw new Error("ANCHOR_UNAVAILABLE: Could not resolve an eligible parent ChatGPT tab");
+    }
+
     const runId = `run_${randomUUID()}`;
     const jobs: AgentJob[] = tasks.map((task) => {
       const identity = {
@@ -195,6 +207,7 @@ export class AgentRuntime {
 
     const run: AgentRun = {
       runId,
+      anchorTabId,
       maxConcurrency,
       jobs,
       operation: Promise.resolve(),
@@ -348,9 +361,17 @@ export class AgentRuntime {
     try {
       let tabId = job.tabId;
       if (tabId === undefined) {
+        const anchor = await this.browser.request<{ tab: { tabId: number; windowId: number } }>("resolve_chatgpt_anchor", {
+          anchorTabId: run.anchorTabId,
+        });
+        const windowId = anchor.tab?.windowId;
+        if (!Number.isInteger(windowId) || windowId < 0) {
+          throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab has no valid window");
+        }
         const opened = await this.browser.request<{ tab: { tabId: number } }>("new_tab", {
           url: "https://chatgpt.com/",
           active: false,
+          windowId,
         });
         tabId = opened.tab.tabId;
         if (!Number.isInteger(tabId) || tabId <= 0) {
