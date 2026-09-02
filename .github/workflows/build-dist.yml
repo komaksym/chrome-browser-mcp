@@ -1,0 +1,29 @@
+name: Build and commit dist
+on:
+  pull_request:
+permissions:
+  contents: write
+jobs:
+  build-dist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/10-recover-finished-agent-results
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Commit generated dist
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist
+          if git diff --cached --quiet; then
+            echo "dist already up to date"
+          else
+            git commit -m "Regenerate dist artifacts"
+            git push origin HEAD:fix/10-recover-finished-agent-results
+          fi
