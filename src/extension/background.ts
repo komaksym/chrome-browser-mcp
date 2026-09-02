@@ -150,7 +150,7 @@ async function activateWorkerTab(tabId: number, allowNonWorker = false) {
 
 /** Reloads one finished ChatGPT worker tab for read recovery without submitting anything. */
 async function reloadWorkerTab(tabId: number) {
-  const tab = await getValidatedWorkerTab(tabId);
+  await getValidatedWorkerTab(tabId);
   await chrome.tabs.reload(tabId);
   return { tab: serializeTab(await chrome.tabs.get(tabId)) };
 }
