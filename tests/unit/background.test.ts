@@ -37,6 +37,7 @@ const chromeApi = {
  create: createTab,
  update: updateTab,
  remove: vi.fn(),
+ onRemoved: { addListener: vi.fn() },
  },
  windows: { update: updateWindow },
  scripting: { executeScript },
@@ -196,6 +197,71 @@ describe("extension background worker commands", () => {
     createTab.mockClear();
     await request("new_tab", { url: "https://example.com/", active: false, windowId: 99 });
     expect(createTab).toHaveBeenCalledWith({ url: "https://example.com/", active: false });
+  });
+
+
+  it("excludes a newly created worker before its tab ID returns to the runtime", async () => {
+    const parent = {
+      id: 7,
+      url: "https://chatgpt.com/c/parent",
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 4,
+      index: 0,
+      status: "complete",
+      lastAccessed: 100,
+    } as chrome.tabs.Tab;
+    const pendingWorker = {
+      ...parent,
+      id: 9,
+      openerTabId: 7,
+      url: "https://chatgpt.com/",
+      lastAccessed: 300,
+    } as chrome.tabs.Tab;
+    tabs.set(7, parent);
+
+    let signalCreateStarted!: () => void;
+    const createStarted = new Promise<void>((resolve) => {
+      signalCreateStarted = resolve;
+    });
+    let finishCreate!: (tab: chrome.tabs.Tab) => void;
+    createTab.mockImplementation(() => {
+      signalCreateStarted();
+      return new Promise<chrome.tabs.Tab>((resolve) => {
+        finishCreate = resolve;
+      });
+    });
+
+    nativeMessageListener?.({
+      type: "request",
+      id: "pending-worker-open",
+      method: "open_agent_worker_tab",
+      params: { anchorTabId: 7 },
+    });
+    await createStarted;
+
+    queryTabs.mockResolvedValue([pendingWorker, parent]);
+    const anchor = await request("resolve_agent_anchor", {});
+
+    expect(anchor).toMatchObject({ result: { tab: { tabId: 7 } } });
+
+    finishCreate(pendingWorker);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await Promise.resolve();
+      const completed = nativeMessages.find(
+        (message) =>
+          typeof message === "object" &&
+          message !== null &&
+          (message as { id?: string }).id === "pending-worker-open",
+      );
+      if (completed) break;
+    }
+    expect(nativeMessages).toContainEqual(expect.objectContaining({
+      id: "pending-worker-open",
+      result: expect.objectContaining({ tab: expect.objectContaining({ tabId: 9 }) }),
+    }));
   });
 
 });
