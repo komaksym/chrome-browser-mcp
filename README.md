@@ -67,6 +67,8 @@ Chrome starts the native host when the extension connects. The native host start
 - An OpenAI Platform tunnel ID and runtime API key with Tunnels Read + Use
 - `tunnel-client`
 
+Chrome 121+ is deliberate for agent-window anchoring: issue #11 requires choosing the most recently user-active ChatGPT tab across normal windows, and this implementation uses `chrome.tabs.Tab.lastAccessed` for that ordering. Supporting Chrome 120 would require either weaker anchor-selection semantics or a separate extension-maintained activity tracker.
+
 ## 1. Install the native host and load the extension once
 
 ```bash
