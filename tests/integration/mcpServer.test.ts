@@ -59,12 +59,19 @@ describe("MCP HTTP server", () => {
     ]);
     expect(tools.tools.some((tool) => tool.name === "spawn_chatgpt_agent")).toBe(false);
     expect(tools.tools.some((tool) => tool.name === "read_chatgpt_agent")).toBe(false);
+    const spawnTool = tools.tools.find((tool) => tool.name === "spawn_agents");
     const collectTool = tools.tools.find((tool) => tool.name === "collect_agents");
+    const cancelTool = tools.tools.find((tool) => tool.name === "cancel_agents");
     expect(collectTool?.annotations).toMatchObject({
       readOnlyHint: false,
       destructiveHint: false,
       openWorldHint: true,
     });
+    expect(spawnTool?.description).toContain("FAILED_TRANSIENT");
+    expect(spawnTool?.description).toContain("do not cancel");
+    expect(collectTool?.description).toContain("failed array contains only terminal worker failures");
+    expect(collectTool?.description).toContain("barrier.satisfied=true");
+    expect(cancelTool?.description).toContain("Do not use cancellation as recovery");
     await client.close();
   });
 
@@ -638,6 +645,8 @@ describe("MCP HTTP server", () => {
       failed: [{
         agent_id: "exhaust",
         state: "FAILED_TERMINAL",
+        terminal: true,
+        recoverable: false,
         error: { code: "TIMEOUT", retryable: false },
       }],
       pending: [],
