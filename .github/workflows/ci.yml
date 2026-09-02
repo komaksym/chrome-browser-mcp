@@ -3,8 +3,6 @@ on:
   pull_request:
   push:
     branches: [main]
-permissions:
-  contents: write
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -25,18 +23,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
-      - name: Check runtime artifacts
-        id: artifacts_check
-        continue-on-error: true
-        run: npm run artifacts:check
-      - name: Commit generated runtime artifacts
-        if: steps.artifacts_check.outcome == 'failure'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist
-          git commit -m "Build runtime artifacts"
-          git push origin HEAD:${{ github.head_ref }}
+      - run: npm run artifacts:check
       - run: npm audit --audit-level=high
       - name: Real Chromium E2E
         run: |
