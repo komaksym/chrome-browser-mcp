@@ -328,6 +328,8 @@ var nativePort = null;
 var reconnectTimer = null;
 var reconnectDelay = 500;
 var workerSnapshots = /* @__PURE__ */ new Map();
+var knownAgentWorkerTabIds = /* @__PURE__ */ new Set();
+var pendingWorkerCreationsByAnchorTabId = /* @__PURE__ */ new Map();
 var SENSITIVE_QUERY_KEY = /(?:access[_-]?token|token|auth|authorization|api[_-]?key|secret|session|code|sig|signature|jwt|credential|password)/i;
 function resolveTabUrl(tab) {
   return tab.url || tab.pendingUrl || "";
@@ -421,6 +423,23 @@ function isChatGptTab(tab) {
     return false;
   }
 }
+function beginPendingWorkerCreation(anchorTabId) {
+  pendingWorkerCreationsByAnchorTabId.set(
+    anchorTabId,
+    (pendingWorkerCreationsByAnchorTabId.get(anchorTabId) ?? 0) + 1
+  );
+}
+function finishPendingWorkerCreation(anchorTabId) {
+  const pendingCount = pendingWorkerCreationsByAnchorTabId.get(anchorTabId) ?? 0;
+  if (pendingCount <= 1) pendingWorkerCreationsByAnchorTabId.delete(anchorTabId);
+  else pendingWorkerCreationsByAnchorTabId.set(anchorTabId, pendingCount - 1);
+}
+function isAgentWorkerCreationInFlight(tab) {
+  return tab.openerTabId !== void 0 && (pendingWorkerCreationsByAnchorTabId.get(tab.openerTabId) ?? 0) > 0;
+}
+function isEligibleAgentAnchor(tab, excludedTabIds) {
+  return tab.id !== void 0 && !tab.incognito && !excludedTabIds.has(tab.id) && !knownAgentWorkerTabIds.has(tab.id) && !isAgentWorkerCreationInFlight(tab) && isChatGptTab(tab);
+}
 async function resolveChatGptAnchor(params) {
   const anchorTabId = numberParam(params, "anchorTabId", -1);
   if (anchorTabId > 0) {
@@ -430,7 +449,7 @@ async function resolveChatGptAnchor(params) {
     } catch {
       throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer available");
     }
-    if (tab2.id === void 0 || tab2.incognito || !isChatGptTab(tab2)) {
+    if (!isEligibleAgentAnchor(tab2, /* @__PURE__ */ new Set())) {
       throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer eligible");
     }
     return { tab: serializeTab(tab2) };
@@ -439,7 +458,7 @@ async function resolveChatGptAnchor(params) {
     Array.isArray(params.excludedTabIds) ? params.excludedTabIds.filter((value) => typeof value === "number" && Number.isInteger(value)) : []
   );
   const tabs = await chrome.tabs.query({ windowType: "normal" });
-  const candidates = tabs.filter((tab2) => tab2.id !== void 0 && !tab2.incognito && !excluded.has(tab2.id) && isChatGptTab(tab2)).sort((left, right) => {
+  const candidates = tabs.filter((tab2) => isEligibleAgentAnchor(tab2, excluded)).sort((left, right) => {
     const leftAccessed = left.lastAccessed ?? 0;
     const rightAccessed = right.lastAccessed ?? 0;
     return rightAccessed - leftAccessed;
@@ -447,6 +466,57 @@ async function resolveChatGptAnchor(params) {
   const tab = candidates[0];
   if (!tab) throw new Error("ANCHOR_UNAVAILABLE: No eligible parent ChatGPT tab is available");
   return { tab: serializeTab(tab) };
+}
+async function openAgentWorkerTab(anchorTabId) {
+  if (!Number.isInteger(anchorTabId) || anchorTabId <= 0) {
+    throw new Error("INVALID_ARGUMENT: anchorTabId is required");
+  }
+  beginPendingWorkerCreation(anchorTabId);
+  try {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let anchor;
+      try {
+        anchor = await chrome.tabs.get(anchorTabId);
+      } catch {
+        throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer available");
+      }
+      if (!isEligibleAgentAnchor(anchor, /* @__PURE__ */ new Set())) {
+        throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer eligible");
+      }
+      try {
+        const tab = await chrome.tabs.create({
+          url: "https://chatgpt.com/",
+          active: false,
+          windowId: anchor.windowId,
+          openerTabId: anchorTabId
+        });
+        if (tab.id === void 0 || tab.id <= 0) {
+          throw new Error("CHATGPT_AGENT_START_FAILED: invalid tab ID");
+        }
+        if (tab.incognito) {
+          await chrome.tabs.remove(tab.id).catch(() => void 0);
+          throw new Error("INCOGNITO_DISABLED: Incognito tabs are excluded");
+        }
+        knownAgentWorkerTabIds.add(tab.id);
+        return { tab: serializeTab(tab) };
+      } catch (error) {
+        let currentAnchor;
+        try {
+          currentAnchor = await chrome.tabs.get(anchorTabId);
+        } catch {
+          throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer available");
+        }
+        if (!isEligibleAgentAnchor(currentAnchor, /* @__PURE__ */ new Set())) {
+          throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer eligible");
+        }
+        if (currentAnchor.windowId !== anchor.windowId && attempt < 2) continue;
+        throw error;
+      }
+    }
+    throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab moved during worker creation");
+  } finally {
+    finishPendingWorkerCreation(anchorTabId);
+  }
 }
 async function getValidatedReadableTab(tabId, requireWorkerOrigin = true) {
   const tab = await chrome.tabs.get(tabId);
@@ -586,6 +656,8 @@ async function execute(method, params) {
     }
     case "resolve_chatgpt_anchor":
       return resolveChatGptAnchor(params);
+    case "open_agent_worker_tab":
+      return openAgentWorkerTab(numberParam(params, "anchorTabId", -1));
     case "search_tabs": {
       const query = (typeof params.query === "string" ? params.query : "").trim().toLocaleLowerCase();
       const maxResults = Math.min(100, Math.max(1, numberParam(params, "maxResults", 20)));
@@ -711,6 +783,9 @@ function scheduleReconnect() {
   }, reconnectDelay);
   reconnectDelay = Math.min(reconnectDelay * 2, 3e4);
 }
+chrome.tabs.onRemoved.addListener((tabId) => {
+  knownAgentWorkerTabIds.delete(tabId);
+});
 chrome.runtime.onInstalled.addListener(connectNative);
 chrome.runtime.onStartup.addListener(connectNative);
 connectNative();
