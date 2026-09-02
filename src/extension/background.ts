@@ -90,10 +90,10 @@ async function listTabs(windowId?: number) {
 }
 
 /** Returns one readable tab and optionally requires the ChatGPT worker origin. */
-async function getValidatedWorkerTab(tabId: number, allowNonWorker = false) {
+async function getValidatedReadableTab(tabId: number, requireWorkerOrigin = true) {
   const tab = await chrome.tabs.get(tabId);
   assertReadableTab(tab);
-  if (!allowNonWorker && new URL(resolveTabUrl(tab)).hostname !== "chatgpt.com") {
+  if (requireWorkerOrigin && new URL(resolveTabUrl(tab)).hostname !== "chatgpt.com") {
     throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
   }
   return tab;
@@ -124,7 +124,7 @@ async function readTab(tabId: number, offset: number, maxCharacters: number, inc
 
 /** Runs an internal worker command after ChatGPT navigation is committed and safe to inject into. */
 async function runChatGptWorker(tabId: number, command: ChatGptWorkerCommand) {
-  const tab = await getValidatedWorkerTab(tabId);
+  const tab = await getValidatedReadableTab(tabId);
   if (!tab.url || tab.status === "loading") {
     throw new Error("NAVIGATION_IN_PROGRESS: ChatGPT worker tab is still navigating");
   }
@@ -141,7 +141,7 @@ async function runChatGptWorker(tabId: number, command: ChatGptWorkerCommand) {
 
 /** Activates one ChatGPT worker tab for recovery and returns its current metadata. */
 async function activateWorkerTab(tabId: number, allowNonWorker = false) {
-  const tab = await getValidatedWorkerTab(tabId, allowNonWorker);
+  const tab = await getValidatedReadableTab(tabId, !allowNonWorker);
   await chrome.windows.update(tab.windowId, { focused: true });
   const updated = await chrome.tabs.update(tabId, { active: true });
   if (!updated) throw new Error("TAB_NOT_FOUND: Could not activate worker tab");
@@ -150,7 +150,7 @@ async function activateWorkerTab(tabId: number, allowNonWorker = false) {
 
 /** Reloads one finished ChatGPT worker tab for read recovery without submitting anything. */
 async function reloadWorkerTab(tabId: number) {
-  await getValidatedWorkerTab(tabId);
+  await getValidatedReadableTab(tabId);
   await chrome.tabs.reload(tabId);
   return { tab: serializeTab(await chrome.tabs.get(tabId)) };
 }
