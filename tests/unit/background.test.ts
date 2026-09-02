@@ -67,6 +67,8 @@ describe("extension background worker commands", () => {
   beforeEach(() => {
     nativeMessages.splice(0);
     tabs.clear();
+    vi.mocked(chromeApi.tabs.query).mockReset();
+    vi.mocked(chromeApi.tabs.create).mockReset();
     executeScript.mockReset();
     updateTab.mockReset();
     updateWindow.mockReset();
@@ -119,4 +121,85 @@ describe("extension background worker commands", () => {
     expect(response.error?.message).toContain("navigating");
     expect(executeScript).not.toHaveBeenCalled();
   });
+  it("selects the most recently accessed eligible ChatGPT tab and excludes worker tabs", async () => {
+    vi.mocked(chromeApi.tabs.query).mockResolvedValue([
+      {
+        id: 10,
+        url: "https://chatgpt.com/c/old",
+        lastAccessed: 100,
+        incognito: false,
+        active: false,
+        pinned: false,
+        discarded: false,
+        windowId: 1,
+        index: 0,
+      },
+      {
+        id: 11,
+        url: "https://chatgpt.com/c/worker",
+        lastAccessed: 300,
+        incognito: false,
+        active: false,
+        pinned: false,
+        discarded: false,
+        windowId: 2,
+        index: 0,
+      },
+      {
+        id: 12,
+        url: "https://chatgpt.com/c/new",
+        lastAccessed: 200,
+        incognito: false,
+        active: true,
+        pinned: false,
+        discarded: false,
+        windowId: 3,
+        index: 0,
+      },
+    ] as chrome.tabs.Tab[]);
+
+    const response = await request("resolve_chatgpt_anchor", { excludedTabIds: [11] });
+
+    expect(response).toMatchObject({ result: { tab: { tabId: 12, windowId: 3 } } });
+  });
+
+  it("returns a stable anchor error when the stored parent leaves ChatGPT", async () => {
+    tabs.set(47, {
+      id: 47,
+      url: "https://example.com/",
+      incognito: false,
+      active: true,
+      pinned: false,
+      discarded: false,
+      windowId: 1,
+      index: 0,
+    } as chrome.tabs.Tab);
+
+    const response = await request("resolve_chatgpt_anchor", { anchorTabId: 47 });
+
+    expect(response).toMatchObject({ error: { code: "ANCHOR_UNAVAILABLE" } });
+  });
+
+  it("creates a worker tab in the explicitly requested window", async () => {
+    vi.mocked(chromeApi.tabs.create).mockResolvedValue({
+      id: 88,
+      url: "https://chatgpt.com/",
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 9,
+      index: 0,
+    } as chrome.tabs.Tab);
+
+    const response = await request("new_tab", { url: "https://chatgpt.com/", active: false, windowId: 9 });
+
+    expect(response.error).toBeUndefined();
+    expect(chromeApi.tabs.create).toHaveBeenCalledWith({
+      url: "https://chatgpt.com/",
+      active: false,
+      windowId: 9,
+    });
+  });
+
 });
