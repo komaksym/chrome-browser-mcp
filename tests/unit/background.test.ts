@@ -311,7 +311,7 @@ describe("extension background worker commands", () => {
       index: 0,
     } as chrome.tabs.Tab;
     tabs.set(47, parent);
-    vi.mocked(chromeApi.tabs.create).mockImplementationOnce(async () => {
+    vi.mocked(chromeApi.tabs.create).mockImplementationOnce(() => {
       tabs.set(47, { ...parent, windowId: 6 });
       throw new Error("opener tab moved");
     });
