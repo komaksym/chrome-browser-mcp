@@ -89,6 +89,49 @@ async function listTabs(windowId?: number) {
   return tabs.filter((tab) => !tab.incognito).map(serializeTab);
 }
 
+/** Returns whether one tab currently points at ChatGPT. */
+function isChatGptTab(tab: chrome.tabs.Tab): boolean {
+  try {
+    return new URL(resolveTabUrl(tab)).hostname === "chatgpt.com";
+  } catch {
+    return false;
+  }
+}
+
+/** Resolves or revalidates the stable parent ChatGPT tab for a worker run. */
+async function resolveChatGptAnchor(params: Record<string, unknown>) {
+  const anchorTabId = numberParam(params, "anchorTabId", -1);
+  if (anchorTabId > 0) {
+    let tab: chrome.tabs.Tab;
+    try {
+      tab = await chrome.tabs.get(anchorTabId);
+    } catch {
+      throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer available");
+    }
+    if (tab.id === undefined || tab.incognito || !isChatGptTab(tab)) {
+      throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer eligible");
+    }
+    return { tab: serializeTab(tab) };
+  }
+
+  const excluded = new Set(
+    Array.isArray(params.excludedTabIds)
+      ? params.excludedTabIds.filter((value): value is number => typeof value === "number" && Number.isInteger(value))
+      : [],
+  );
+  const tabs = await chrome.tabs.query({ windowType: "normal" });
+  const candidates = tabs
+    .filter((tab) => tab.id !== undefined && !tab.incognito && !excluded.has(tab.id) && isChatGptTab(tab))
+    .sort((left, right) => {
+      const leftAccessed = (left as chrome.tabs.Tab & { lastAccessed?: number }).lastAccessed ?? 0;
+      const rightAccessed = (right as chrome.tabs.Tab & { lastAccessed?: number }).lastAccessed ?? 0;
+      return rightAccessed - leftAccessed;
+    });
+  const tab = candidates[0];
+  if (!tab) throw new Error("ANCHOR_UNAVAILABLE: No eligible parent ChatGPT tab is available");
+  return { tab: serializeTab(tab) };
+}
+
 /** Returns one readable tab and optionally requires the ChatGPT worker origin. */
 async function getValidatedReadableTab(tabId: number, requireWorkerOrigin = true) {
   const tab = await chrome.tabs.get(tabId);
@@ -236,6 +279,8 @@ async function execute(method: BrowserMethod, params: Record<string, unknown>): 
       }
       return { results, count: results.length };
     }
+    case "resolve_chatgpt_anchor":
+      return resolveChatGptAnchor(params);
     case "search_tabs": {
       const query = (typeof params.query === "string" ? params.query : "").trim().toLocaleLowerCase();
       const maxResults = Math.min(100, Math.max(1, numberParam(params, "maxResults", 20)));
@@ -288,7 +333,12 @@ async function execute(method: BrowserMethod, params: Record<string, unknown>): 
       return { tab: serializeTab(updated) };
     }
     case "new_tab": {
-      const tab = await chrome.tabs.create({ url: httpUrlParam(params, "url"), active: params.active !== false });
+      const windowId = numberParam(params, "windowId", -1);
+      const tab = await chrome.tabs.create({
+        url: httpUrlParam(params, "url"),
+        active: params.active !== false,
+        ...(windowId >= 0 ? { windowId } : {}),
+      });
       if (tab.incognito) throw new Error("INCOGNITO_DISABLED: Incognito tabs are excluded");
       return { tab: serializeTab(tab) };
     }
