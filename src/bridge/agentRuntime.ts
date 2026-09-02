@@ -453,7 +453,14 @@ export class AgentRuntime {
     worker: WorkerReadResult,
     source: ObservationDiagnostics["observation_source"],
   ): void {
-    job.bestObservation = worker;
+    const previous = job.bestObservation;
+    if (
+      !previous ||
+      !this.generationDefinitelyFinished(previous) ||
+      this.generationDefinitelyFinished(worker)
+    ) {
+      job.bestObservation = worker;
+    }
     job.diagnostics.observation_source = source;
     job.diagnostics.observation_state = {
       ready: worker.ready,
@@ -525,6 +532,29 @@ export class AgentRuntime {
     return latest;
   }
 
+  /** Records one recovery-step failure without replacing the recovery contract's terminal error. */
+  private recordRecoveryFailure(job: AgentJob, step: string, error: unknown): void {
+    const details = errorDetails(error);
+    const previousReason = job.diagnostics.uncertainty_reason ?? "worker result observation remained uncertain";
+    job.diagnostics.uncertainty_reason =
+      `${previousReason}; ${step} failed (${details.code}): ${details.message}`;
+  }
+
+  /** Runs one recovery step without allowing its error to escape into generic job failure handling. */
+  private async recoveryAttempt<Value>(
+    run: AgentRun,
+    job: AgentJob,
+    step: string,
+    operation: () => Promise<Value>,
+  ): Promise<Value | undefined> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!run.cancellationRequested) this.recordRecoveryFailure(job, step, error);
+      return undefined;
+    }
+  }
+
   /** Restores the previously active normal tab after activation-based worker recovery when possible. */
   private async restoreActiveTab(tabId: number | undefined): Promise<void> {
     if (tabId === undefined) return;
@@ -547,10 +577,15 @@ export class AgentRuntime {
     job.diagnostics.uncertainty_reason = "completion marker missing after generation appeared finished";
     job.diagnostics.recovery_steps = ["current_state"];
 
-    if (this.acceptObservation(job, job.bestObservation ?? initial)) return;
+    const currentAccepted = await this.recoveryAttempt(run, job, "current_state", async () =>
+      this.acceptObservation(job, job.bestObservation ?? initial),
+    );
+    if (run.cancellationRequested || currentAccepted || Boolean(job.result)) return;
 
     job.diagnostics.recovery_steps.push("bounded_reread");
-    const reread = await this.rereadWithBackoff(run, job, "backoff_reread", 3);
+    const reread = await this.recoveryAttempt(run, job, "bounded_reread", () =>
+      this.rereadWithBackoff(run, job, "backoff_reread", 3),
+    );
     if (run.cancellationRequested || Boolean(job.result)) return;
 
     let previousActiveTabId: number | undefined;
@@ -563,9 +598,10 @@ export class AgentRuntime {
 
     job.diagnostics.recovery_steps.push("activate_worker_tab");
     try {
-      await this.browser.request("activate_worker_tab", { tabId });
-      const activated = await this.rereadWithBackoff(run, job, "activated_reread", 2);
-      if (activated) this.rememberObservation(job, activated, "activated_reread");
+      await this.recoveryAttempt(run, job, "activate_worker_tab", async () => {
+        await this.browser.request("activate_worker_tab", { tabId });
+        return this.rereadWithBackoff(run, job, "activated_reread", 2);
+      });
     } finally {
       await this.restoreActiveTab(previousActiveTabId);
     }
@@ -574,8 +610,10 @@ export class AgentRuntime {
     const latest = job.bestObservation ?? reread ?? initial;
     if (this.generationDefinitelyFinished(latest)) {
       job.diagnostics.recovery_steps.push("reload_worker_tab");
-      await this.browser.request("reload_worker_tab", { tabId });
-      await this.rereadWithBackoff(run, job, "reload_reread", 4);
+      await this.recoveryAttempt(run, job, "reload_worker_tab", async () => {
+        await this.browser.request("reload_worker_tab", { tabId });
+        return this.rereadWithBackoff(run, job, "reload_reread", 4);
+      });
     }
     if (run.cancellationRequested || Boolean(job.result)) return;
 
