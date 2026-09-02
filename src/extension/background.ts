@@ -16,8 +16,6 @@ const RESTRICTED_SCHEMES = ["chrome:", "chrome-extension:", "devtools:", "view-s
 let nativePort: chrome.runtime.Port | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectDelay = 500;
-const chatGptActivationOrder: number[] = [];
-
 function isChatGptAnchorCandidate(tab: chrome.tabs.Tab, excluded: Set<number>): tab is chrome.tabs.Tab & { id: number } {
   if (tab.id === undefined || excluded.has(tab.id) || tab.incognito) return false;
   const rawUrl = resolveTabUrl(tab);
@@ -29,15 +27,9 @@ function isChatGptAnchorCandidate(tab: chrome.tabs.Tab, excluded: Set<number>): 
   }
 }
 
-function rememberChatGptActivation(tabId: number): void {
-  const index = chatGptActivationOrder.indexOf(tabId);
-  if (index >= 0) chatGptActivationOrder.splice(index, 1);
-  chatGptActivationOrder.unshift(tabId);
-  if (chatGptActivationOrder.length > 100) chatGptActivationOrder.length = 100;
-}
-
 async function resolveAgentAnchor(params: Record<string, unknown>) {
-  const requestedId = typeof params.tabId === "number" ? Math.trunc(params.tabId) : undefined;
+  const requestedId =
+    typeof params.tabId === "number" && Number.isInteger(params.tabId) ? params.tabId : undefined;
   const excluded = new Set(
     Array.isArray(params.excludeTabIds)
       ? params.excludeTabIds.filter((value): value is number => typeof value === "number" && Number.isInteger(value))
@@ -54,17 +46,7 @@ async function resolveAgentAnchor(params: Record<string, unknown>) {
     }
   }
 
-  for (const tabId of chatGptActivationOrder) {
-    if (excluded.has(tabId)) continue;
-    try {
-      const tab = await chrome.tabs.get(tabId);
-      if (isChatGptAnchorCandidate(tab, excluded)) return { tab: serializeTab(tab) };
-    } catch {
-      // Stale activation entries are ignored.
-    }
-  }
-
-  const tabs = await chrome.tabs.query({});
+  const tabs = await chrome.tabs.query({ windowType: "normal" });
   const candidates = tabs
     .filter((tab) => isChatGptAnchorCandidate(tab, excluded))
     .sort((left, right) => {
@@ -76,12 +58,6 @@ async function resolveAgentAnchor(params: Record<string, unknown>) {
   if (!tab) throw new Error("AGENT_ANCHOR_UNAVAILABLE: No eligible parent ChatGPT tab is available");
   return { tab: serializeTab(tab) };
 }
-
-chrome.tabs.onActivated?.addListener(({ tabId }) => {
-  void chrome.tabs.get(tabId).then((tab) => {
-    if (isChatGptAnchorCandidate(tab, new Set())) rememberChatGptActivation(tabId);
-  }).catch(() => undefined);
-});
 
 const SENSITIVE_QUERY_KEY = /(?:access[_-]?token|token|auth|authorization|api[_-]?key|secret|session|code|sig|signature|jwt|credential|password)/i;
 
