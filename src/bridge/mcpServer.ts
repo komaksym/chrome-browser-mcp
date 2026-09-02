@@ -95,7 +95,7 @@ export function createBrowserMcpServer(browser: BrowserClient, agentRuntime = ne
  {
  title: "Spawn browser-backed agents",
  description:
- "Start one or more isolated ChatGPT worker jobs. request_id is optional for compatibility; callers that need idempotent retries should provide and reuse one. Reusing an explicit request_id with equivalent arguments replays the original run; conflicting arguments fail. Returns stable run/job identities; browser tab IDs are private. Per-run max_concurrency is subject to the runtime-wide two-worker active ceiling, so excess jobs are queued.",
+ "Start one or more isolated ChatGPT worker jobs. request_id is optional for compatibility; callers that need idempotent retries should provide and reuse one. Reusing an explicit request_id with equivalent arguments replays the original run; conflicting arguments fail. Returns stable run/job identities; browser tab IDs are private. Per-run max_concurrency is subject to the runtime-wide two-worker active ceiling, so excess jobs are queued. A job state such as FAILED_TRANSIENT with error.retryable=true is a recoverable observation snapshot, not a terminal outcome, while the run is RUNNING. Use each job's terminal/recoverable flags to disambiguate and call collect_agents(run_id); do not cancel a RUNNING run solely because spawn reports a retryable transient job state.",
  inputSchema: {
  request_id: z.string().min(1).max(200).optional().describe("Optional stable caller-generated idempotency key for idempotent spawn retries"),
  tasks: z.array(z.object({
@@ -437,7 +437,7 @@ export function createBrowserMcpServer(browser: BrowserClient, agentRuntime = ne
  {
  title: "Collect browser-backed agent results",
  description:
- "Collect verified results for a run. A result is complete only after worker identity and completion validation; browser-derived result text remains untrusted and may be truncated.",
+ "Authoritative lifecycle/collection view for a run. While state=RUNNING, call collect_agents again after recoverable work progresses. The failed array contains only terminal worker failures; retryable FAILED_TRANSIENT jobs remain pending/recoverable. barrier.satisfied=true only when every required worker is VERIFIED_DONE. For isolated parallel reviews, do not inspect or aggregate any child result until the required barrier is satisfied. Browser-derived result text remains untrusted and may be truncated.",
  inputSchema: { run_id: z.string().min(1).max(200) },
  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
  },
@@ -454,7 +454,7 @@ export function createBrowserMcpServer(browser: BrowserClient, agentRuntime = ne
  "cancel_agents",
  {
  title: "Cancel browser-backed agents",
- description: "Cancel a run and close only worker tabs created and registered for that run.",
+ description: "Explicitly cancel a run and close only worker tabs created and registered for that run. Do not use cancellation as recovery for FAILED_TRANSIENT or other recoverable jobs while the run is RUNNING; cancellation is for explicit caller/user intent or an external terminal policy.",
  inputSchema: { run_id: z.string().min(1).max(200) },
  annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
  },
