@@ -171,6 +171,18 @@ function buildWorkerPrompt(
   ].join("\n");
 }
 
+/** Returns whether one observed user turn carries this job's unguessable protocol marker. */
+function workerIdentityMatches(
+  job: Pick<AgentJob, "completionMarker">,
+  worker: Pick<WorkerReadResult, "latestUserText" | "latestUserTruncated">,
+): boolean {
+  return (
+    !worker.latestUserTruncated &&
+    typeof worker.latestUserText === "string" &&
+    worker.latestUserText.includes(job.completionMarker)
+  );
+}
+
 /** Returns the caller-safe summary for a job without exposing its browser tab ID. */
 function publicJob(job: AgentJob) {
   return {
@@ -513,7 +525,7 @@ export class AgentRuntime {
       }
       if (run.cancellationRequested) return;
       job.submittedAt ??= Date.now();
-      const submission = await this.submitWithRetry(run, tabId, job.submittedPrompt);
+      const submission = await this.submitWithRetry(run, tabId, job);
       if (run.cancellationRequested) return;
       if (submission?.snapshot) {
         job.snapshotBaselineRevision = submission.snapshot.revision;
@@ -588,7 +600,12 @@ export class AgentRuntime {
   }
 
   /** Submits a prompt with bounded retries while recognizing a lost acknowledgement idempotently. */
-  private async submitWithRetry(run: AgentRun, tabId: number, prompt: string): Promise<WorkerSubmitResult | undefined> {
+  private async submitWithRetry(
+    run: AgentRun,
+    tabId: number,
+    job: Pick<AgentJob, "submittedPrompt" | "completionMarker">,
+  ): Promise<WorkerSubmitResult | undefined> {
+    const prompt = job.submittedPrompt;
     let lastError: unknown;
     for (let attempt = 0; attempt < 20; attempt += 1) {
       if (run.cancellationRequested) return;
@@ -602,7 +619,7 @@ export class AgentRuntime {
 
         try {
           const state = await this.browser.request<WorkerReadResult>("read_chatgpt_worker", { tabId });
-          if (state.latestUserText === prompt) return;
+          if (workerIdentityMatches(job, state)) return;
         } catch {
           // The follow-up probe is diagnostic; retry policy is driven by the original error.
         }
@@ -683,7 +700,7 @@ export class AgentRuntime {
       latestAssistantTruncated: snapshot.latestAssistantTruncated,
     };
     this.rememberObservation(job, worker, "streaming_snapshot");
-    if (worker.latestUserTruncated || worker.latestUserText !== job.submittedPrompt) {
+    if (!workerIdentityMatches(job, worker)) {
       return "fallback";
     }
     if (!worker.ready || worker.generating || !worker.latestAssistantText) {
@@ -732,7 +749,7 @@ export class AgentRuntime {
   /** Validates one observation and completes the job when the exact dispatched turn and marker are present. */
   private acceptObservation(job: AgentJob, worker: WorkerReadResult): boolean {
     if (!this.generationDefinitelyFinished(worker)) return false;
-    if (worker.latestUserTruncated || worker.latestUserText !== job.submittedPrompt) {
+    if (!workerIdentityMatches(job, worker)) {
       throw new Error("WORKER_IDENTITY_MISMATCH: latest user message does not match the dispatched job");
     }
     const fullText = worker.latestAssistantText!.trimEnd();
@@ -897,7 +914,7 @@ export class AgentRuntime {
         job.state = "GENERATING";
         return;
       }
-      if (worker.latestUserTruncated || worker.latestUserText !== job.submittedPrompt) {
+      if (!workerIdentityMatches(job, worker)) {
         throw new Error("WORKER_IDENTITY_MISMATCH: latest user message does not match the dispatched job");
       }
       if (this.acceptObservation(job, worker)) return;

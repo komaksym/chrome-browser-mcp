@@ -551,6 +551,85 @@ describe("AgentRuntime", () => {
  });
  });
 
+ it("accepts a rendered worker user turn when its unique protocol marker still matches", async () => {
+ let submittedPrompt = "";
+ const browser = {
+ request: (method: string, args: Record<string, unknown> = {}) => {
+ if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
+ if (method === "chatgpt_worker_submit") {
+ submittedPrompt = args.prompt as string;
+ return Promise.resolve({ submitted: true });
+ }
+ if (method === "read_chatgpt_worker") {
+ const marker = completionMarker(submittedPrompt);
+ return Promise.resolve({
+ ready: true,
+ generating: false,
+ latestUserText: `Rendered worker turn\n${marker}`,
+ latestUserTruncated: false,
+ latestAssistantText: `Rendered result\n${marker}`,
+ latestAssistantTruncated: false,
+ });
+ }
+ if (method === "close_tab") return Promise.resolve({ closed: true });
+ return Promise.resolve({});
+ },
+ } as unknown as BrowserClient;
+ const runtime = new AgentRuntime(browser);
+ const spawned = await runtime.spawnAgents([{ agent_id: "rendered", prompt: "answer once" }], 1);
+
+ const collected = await runtime.collectAgents(spawned.run_id);
+
+ expect(collected).toMatchObject({
+ state: "COMPLETE",
+ barrier: { satisfied: true },
+ results: [{ agent_id: "rendered", result: { type: "text", text: "Rendered result" } }],
+ failed: [],
+ pending: [],
+ });
+ });
+
+ it("recognizes a rendered submitted turn after a lost acknowledgement without submitting twice", async () => {
+ let submittedPrompt = "";
+ let submissionCalls = 0;
+ const browser = {
+ request: (method: string, args: Record<string, unknown> = {}) => {
+ if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
+ if (method === "chatgpt_worker_submit") {
+ submissionCalls += 1;
+ submittedPrompt = args.prompt as string;
+ if (submissionCalls === 1) {
+ return Promise.reject(new BrowserError("TIMEOUT", "worker submit acknowledgement was lost"));
+ }
+ return Promise.resolve({ submitted: true });
+ }
+ if (method === "read_chatgpt_worker") {
+ const marker = completionMarker(submittedPrompt);
+ return Promise.resolve({
+ ready: true,
+ generating: true,
+ latestUserText: `Rendered worker turn\n${marker}`,
+ latestUserTruncated: false,
+ latestAssistantText: null,
+ latestAssistantTruncated: false,
+ });
+ }
+ return Promise.resolve({});
+ },
+ } as unknown as BrowserClient;
+ const runtime = new AgentRuntime(browser);
+
+ const spawned = await runtime.spawnAgents([{ agent_id: "lost-ack", prompt: "answer once" }], 1);
+
+ expect(spawned).toMatchObject({
+ state: "RUNNING",
+ jobs: [{ agent_id: "lost-ack", state: "DISPATCHED" }],
+ });
+ expect(submissionCalls).toBe(1);
+ });
+
  it("does not mask worker identity mismatch as recovery exhaustion", async () => {
  const { browser, state } = createRecoveryBrowser({
  read: (current) => Promise.resolve({

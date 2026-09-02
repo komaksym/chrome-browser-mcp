@@ -68,6 +68,40 @@ describe("MCP HTTP server", () => {
     await client.close();
   });
 
+  it("accepts an omitted request_id and returns the generated request identity", async () => {
+    let submissionCalls = 0;
+    const fakeBrowser = {
+      status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
+      request: (method: string) => {
+        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 81 } });
+        if (method === "chatgpt_worker_submit") {
+          submissionCalls += 1;
+          return Promise.resolve({ submitted: true });
+        }
+        return Promise.resolve({});
+      },
+    } as BrowserClient;
+    const client = await connect(fakeBrowser);
+
+    const spawned = await client.callTool({
+      name: "spawn_agents",
+      arguments: {
+        tasks: [{ agent_id: "legacy-client", prompt: "work" }],
+        max_concurrency: 1,
+      },
+    });
+
+    expect(spawned.isError).not.toBe(true);
+    expect(spawned.structuredContent).toMatchObject({
+      state: "RUNNING",
+      jobs: [{ agent_id: "legacy-client", state: "DISPATCHED" }],
+    });
+    expect((spawned.structuredContent as Record<string, unknown>).request_id).toMatch(/^legacy_/);
+    expect(submissionCalls).toBe(1);
+    await client.close();
+  });
+
   it("replays an equivalent MCP spawn request and rejects conflicting reuse", async () => {
     let tabOpenCalls = 0;
     let submissionCalls = 0;
@@ -360,7 +394,6 @@ describe("MCP HTTP server", () => {
     await terminalClient.close();
   });
 
-
   it("retries transient collection failures without leaking concurrency slots", async () => {
     let nextTabId = 101;
     let readAttempts = 0;
@@ -554,7 +587,6 @@ describe("MCP HTTP server", () => {
     });
     await client.close();
   });
-
 
   it("does not duplicate-submit when submission succeeds but its acknowledgement is lost", async () => {
     let submitCalls = 0;
