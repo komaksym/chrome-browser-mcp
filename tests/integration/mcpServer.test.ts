@@ -77,7 +77,7 @@ describe("MCP HTTP server", () => {
       request: (method: string, args: Record<string, unknown> = {}) => {
         if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         requests.push({ method, args });
-        if (method === "new_tab") {
+        if (method === "open_agent_worker_tab") {
           const tabId = nextTabId++;
           return Promise.resolve({
             tab: {
@@ -137,7 +137,7 @@ describe("MCP HTTP server", () => {
     const spawnedContent = spawned.structuredContent as Record<string, unknown>;
     expect(typeof spawnedContent.run_id).toBe("string");
     expect(JSON.stringify(spawned.structuredContent)).not.toMatch(/tab_?id/i);
-    expect(requests.filter((request) => request.method === "new_tab")).toHaveLength(1);
+    expect(requests.filter((request) => request.method === "open_agent_worker_tab")).toHaveLength(1);
 
     const runId = spawnedContent.run_id as string;
     const firstCollect = await client.callTool({
@@ -165,7 +165,7 @@ describe("MCP HTTP server", () => {
     });
     expect(JSON.stringify(firstCollect.structuredContent)).toContain("untrusted");
     expect(JSON.stringify(firstCollect.structuredContent)).not.toMatch(/tab_?id/i);
-    expect(requests.filter((request) => request.method === "new_tab")).toHaveLength(2);
+    expect(requests.filter((request) => request.method === "open_agent_worker_tab")).toHaveLength(2);
 
     const secondCollect = await client.callTool({
       name: "collect_agents",
@@ -204,7 +204,7 @@ describe("MCP HTTP server", () => {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string) => {
         if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
-        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 91 } });
+        if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 91 } });
         if (method === "chatgpt_worker_submit") {
           transientAttempts += 1;
           if (transientAttempts === 1) {
@@ -233,7 +233,7 @@ describe("MCP HTTP server", () => {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string) => {
         if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
-        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 92 } });
+        if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 92 } });
         if (method === "chatgpt_worker_submit") {
           terminalAttempts += 1;
           return Promise.reject(new Error("CHATGPT_UNSUPPORTED_PAGE: wrong origin"));
@@ -273,7 +273,7 @@ describe("MCP HTTP server", () => {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
         if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
-        if (method === "new_tab") {
+        if (method === "open_agent_worker_tab") {
           openedTabs += 1;
           return Promise.resolve({ tab: { tabId: nextTabId++ } });
         }
@@ -345,7 +345,7 @@ describe("MCP HTTP server", () => {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
         if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
-        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 111 } });
+        if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 111 } });
         if (method === "chatgpt_worker_submit") {
           submittedPrompt = args.prompt as string;
           return Promise.resolve({ submitted: true });
@@ -395,7 +395,7 @@ describe("MCP HTTP server", () => {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
         if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
-        if (method === "new_tab") return Promise.resolve({ tab: { tabId: nextTabId++ } });
+        if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: nextTabId++ } });
         if (method === "chatgpt_worker_submit") {
           submitted.set(args.tabId as number, args.prompt as string);
           return Promise.resolve({ submitted: true });
@@ -466,7 +466,7 @@ describe("MCP HTTP server", () => {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
         if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
-        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 121 } });
+        if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 121 } });
         if (method === "chatgpt_worker_submit") {
           submitCalls += 1;
           submittedPrompt = args.prompt as string;
@@ -510,7 +510,7 @@ describe("MCP HTTP server", () => {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string) => {
         if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
-        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 131 } });
+        if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 131 } });
         if (method === "chatgpt_worker_submit") {
           submitCalls += 1;
           if (submitCalls === 1) {
@@ -552,7 +552,7 @@ describe("MCP HTTP server", () => {
       request: (method: string, args: Record<string, unknown> = {}) => {
         if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         requests.push({ method, args });
-        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 701 } });
+        if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 701 } });
         if (method === "chatgpt_worker_submit") {
           submittedPrompt = args.prompt as string;
           return Promise.resolve({ submitted: true });
