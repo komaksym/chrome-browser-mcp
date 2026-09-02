@@ -23,7 +23,20 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
-      - run: npm run artifacts:check
+      - name: Check runtime artifacts
+        id: artifacts_check
+        continue-on-error: true
+        run: npm run artifacts:check
+      - name: Upload generated runtime artifacts
+        if: steps.artifacts_check.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-runtime
+          path: dist
+          if-no-files-found: error
+      - name: Fail stale runtime artifacts
+        if: steps.artifacts_check.outcome == 'failure'
+        run: exit 1
       - run: npm audit --audit-level=high
       - name: Real Chromium E2E
         run: |
