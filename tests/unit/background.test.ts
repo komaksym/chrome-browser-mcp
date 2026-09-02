@@ -13,6 +13,8 @@ const tabs = new Map<number, chrome.tabs.Tab>();
 const executeScript = vi.fn();
 const updateTab = vi.fn();
 const updateWindow = vi.fn();
+const queryTabs = vi.fn();
+const createTab = vi.fn();
 
 const chromeApi = {
   runtime: {
@@ -27,13 +29,12 @@ const chromeApi = {
     onStartup: { addListener: vi.fn() },
   },
   tabs: {
-    onActivated: { addListener: vi.fn() },
     get: (tabId: number) => {
       const tab = tabs.get(tabId);
       return tab ? Promise.resolve(tab) : Promise.reject(new Error("TAB_NOT_FOUND: missing test tab"));
     },
-    query: vi.fn(),
-    create: vi.fn(),
+    query: queryTabs,
+    create: createTab,
     update: updateTab,
     remove: vi.fn(),
   },
@@ -71,8 +72,8 @@ describe("extension background worker commands", () => {
     executeScript.mockReset();
     updateTab.mockReset();
     updateWindow.mockReset();
-    chromeApi.tabs.query.mockReset();
-    chromeApi.tabs.create.mockReset();
+    queryTabs.mockReset();
+    createTab.mockReset();
   });
 
   afterAll(() => {
@@ -125,14 +126,39 @@ describe("extension background worker commands", () => {
   it("selects the most recently accessed non-worker ChatGPT anchor and honors explicit worker window placement", async () => {
     const parent = { id: 7, url: "https://chatgpt.com/c/parent", incognito: false, active: false, pinned: false, discarded: false, windowId: 4, index: 0, status: "complete", lastAccessed: 200 } as chrome.tabs.Tab;
     const worker = { id: 8, url: "https://chatgpt.com/c/worker", incognito: false, active: false, pinned: false, discarded: false, windowId: 9, index: 0, status: "complete", lastAccessed: 300 } as chrome.tabs.Tab;
-    chromeApi.tabs.query.mockResolvedValue([worker, parent]);
-    chromeApi.tabs.create.mockResolvedValue({ ...parent, id: 9, windowId: 4 });
+    queryTabs.mockResolvedValue([worker, parent]);
+    createTab.mockResolvedValue({ ...parent, id: 9, windowId: 4 });
 
     const anchor = await request("resolve_agent_anchor", { excludeTabIds: [8] });
     expect(anchor).toMatchObject({ result: { tab: { tabId: 7, windowId: 4 } } });
+    expect(queryTabs).toHaveBeenCalledWith({ windowType: "normal" });
 
     const opened = await request("new_tab", { url: "https://chatgpt.com/", active: false, windowId: 4 });
     expect(opened.error).toBeUndefined();
-    expect(chromeApi.tabs.create).toHaveBeenCalledWith({ url: "https://chatgpt.com/", active: false, windowId: 4 });
+    expect(createTab).toHaveBeenCalledWith({ url: "https://chatgpt.com/", active: false, windowId: 4 });
+  });
+
+  it("re-resolves the stored parent window and rejects an anchor that leaves ChatGPT", async () => {
+    const parent = {
+      id: 7,
+      url: "https://chatgpt.com/c/parent",
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 4,
+      index: 0,
+      status: "complete",
+      lastAccessed: 200,
+    } as chrome.tabs.Tab;
+    tabs.set(7, parent);
+
+    tabs.set(7, { ...parent, windowId: 6 });
+    const moved = await request("resolve_agent_anchor", { tabId: 7 });
+    expect(moved).toMatchObject({ result: { tab: { tabId: 7, windowId: 6 } } });
+
+    tabs.set(7, { ...parent, url: "https://example.com/" });
+    const invalid = await request("resolve_agent_anchor", { tabId: 7 });
+    expect(invalid).toMatchObject({ error: { code: "AGENT_ANCHOR_UNAVAILABLE" } });
   });
 });
