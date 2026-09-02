@@ -45,6 +45,12 @@ function buildWorkerPrompt(job, prompt) {
         `As the final line of your response, output exactly: ${job.completionMarker}`,
     ].join("\n");
 }
+/** Returns whether one observed user turn carries this job's unguessable protocol marker. */
+function workerIdentityMatches(job, worker) {
+    return (!worker.latestUserTruncated &&
+        typeof worker.latestUserText === "string" &&
+        worker.latestUserText.includes(job.completionMarker));
+}
 /** Returns the caller-safe summary for a job without exposing its browser tab ID. */
 function publicJob(job) {
     return {
@@ -356,7 +362,7 @@ export class AgentRuntime {
             if (run.cancellationRequested)
                 return;
             job.submittedAt ??= Date.now();
-            const submission = await this.submitWithRetry(run, tabId, job.submittedPrompt);
+            const submission = await this.submitWithRetry(run, tabId, job);
             if (run.cancellationRequested)
                 return;
             if (submission?.snapshot) {
@@ -433,7 +439,8 @@ export class AgentRuntime {
         }
     }
     /** Submits a prompt with bounded retries while recognizing a lost acknowledgement idempotently. */
-    async submitWithRetry(run, tabId, prompt) {
+    async submitWithRetry(run, tabId, job) {
+        const prompt = job.submittedPrompt;
         let lastError;
         for (let attempt = 0; attempt < 20; attempt += 1) {
             if (run.cancellationRequested)
@@ -450,7 +457,7 @@ export class AgentRuntime {
                 lastError = error;
                 try {
                     const state = await this.browser.request("read_chatgpt_worker", { tabId });
-                    if (state.latestUserText === prompt)
+                    if (workerIdentityMatches(job, state))
                         return;
                 }
                 catch {
@@ -533,7 +540,7 @@ export class AgentRuntime {
             latestAssistantTruncated: snapshot.latestAssistantTruncated,
         };
         this.rememberObservation(job, worker, "streaming_snapshot");
-        if (worker.latestUserTruncated || worker.latestUserText !== job.submittedPrompt) {
+        if (!workerIdentityMatches(job, worker)) {
             return "fallback";
         }
         if (!worker.ready || worker.generating || !worker.latestAssistantText) {
@@ -575,7 +582,7 @@ export class AgentRuntime {
     acceptObservation(job, worker) {
         if (!this.generationDefinitelyFinished(worker))
             return false;
-        if (worker.latestUserTruncated || worker.latestUserText !== job.submittedPrompt) {
+        if (!workerIdentityMatches(job, worker)) {
             throw new Error("WORKER_IDENTITY_MISMATCH: latest user message does not match the dispatched job");
         }
         const fullText = worker.latestAssistantText.trimEnd();
@@ -735,7 +742,7 @@ export class AgentRuntime {
                 job.state = "GENERATING";
                 return;
             }
-            if (worker.latestUserTruncated || worker.latestUserText !== job.submittedPrompt) {
+            if (!workerIdentityMatches(job, worker)) {
                 throw new Error("WORKER_IDENTITY_MISMATCH: latest user message does not match the dispatched job");
             }
             if (this.acceptObservation(job, worker))

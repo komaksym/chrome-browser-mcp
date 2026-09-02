@@ -73,9 +73,9 @@ export function createBrowserMcpServer(browser, agentRuntime = new AgentRuntime(
     }, () => asToolResult({ ...browser.status(), mcpVersion: packageVersion, writeEnabled: true }));
     server.registerTool("spawn_agents", {
         title: "Spawn browser-backed agents",
-        description: "Start one or more isolated ChatGPT worker jobs. Reusing request_id with equivalent arguments replays the original run; conflicting arguments fail. Returns stable run/job identities; browser tab IDs are private. Per-run max_concurrency is subject to the runtime-wide two-worker active ceiling, so excess jobs are queued.",
+        description: "Start one or more isolated ChatGPT worker jobs. request_id is optional for compatibility; callers that need idempotent retries should provide and reuse one. Reusing an explicit request_id with equivalent arguments replays the original run; conflicting arguments fail. Returns stable run/job identities; browser tab IDs are private. Per-run max_concurrency is subject to the runtime-wide two-worker active ceiling, so excess jobs are queued.",
         inputSchema: {
-            request_id: z.string().min(1).max(200).describe("Stable caller-generated idempotency key for this spawn request"),
+            request_id: z.string().min(1).max(200).optional().describe("Optional stable caller-generated idempotency key for idempotent spawn retries"),
             tasks: z.array(z.object({
                 agent_id: z.string().min(1).max(100),
                 prompt: z.string().min(1).max(100_000),
