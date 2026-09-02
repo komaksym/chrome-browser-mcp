@@ -59,12 +59,19 @@ describe("MCP HTTP server", () => {
     ]);
     expect(tools.tools.some((tool) => tool.name === "spawn_chatgpt_agent")).toBe(false);
     expect(tools.tools.some((tool) => tool.name === "read_chatgpt_agent")).toBe(false);
+    const spawnTool = tools.tools.find((tool) => tool.name === "spawn_agents");
     const collectTool = tools.tools.find((tool) => tool.name === "collect_agents");
+    const cancelTool = tools.tools.find((tool) => tool.name === "cancel_agents");
     expect(collectTool?.annotations).toMatchObject({
       readOnlyHint: false,
       destructiveHint: false,
       openWorldHint: true,
     });
+    expect(spawnTool?.description).toContain("FAILED_TRANSIENT");
+    expect(spawnTool?.description).toContain("do not cancel");
+    expect(collectTool?.description).toContain("failed array contains only terminal worker failures");
+    expect(collectTool?.description).toContain("barrier.satisfied=true");
+    expect(cancelTool?.description).toContain("Do not use cancellation as recovery");
     await client.close();
   });
 
@@ -139,6 +146,132 @@ describe("MCP HTTP server", () => {
     expect(JSON.stringify(conflict.content)).toContain("IDEMPOTENCY_CONFLICT");
     expect(tabOpenCalls).toBe(1);
     expect(submissionCalls).toBe(1);
+    await client.close();
+  });
+
+  it("keeps retryable spawn extraction failures alive until the collection barrier is satisfied", async () => {
+    const submitted = new Map<number, string>();
+    const readCounts = new Map<number, number>();
+    let openAttempts = 0;
+    let closeCalls = 0;
+    const fakeBrowser = {
+      status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        if (method === "open_agent_worker_tab") {
+          openAttempts += 1;
+          if (openAttempts <= 2) {
+            return Promise.reject(new Error("EXTRACTION_FAILED: No ChatGPT worker result returned"));
+          }
+          return Promise.resolve({ tab: { tabId: 100 + openAttempts } });
+        }
+        if (method === "chatgpt_worker_submit") {
+          submitted.set(args.tabId as number, args.prompt as string);
+          return Promise.resolve({ submitted: true });
+        }
+        if (method === "read_chatgpt_worker") {
+          const tabId = args.tabId as number;
+          const prompt = submitted.get(tabId);
+          if (!prompt) throw new Error(`No submitted prompt for tab ${tabId}`);
+          const readCount = (readCounts.get(tabId) ?? 0) + 1;
+          readCounts.set(tabId, readCount);
+          if (readCount < 3) {
+            return Promise.resolve({
+              ready: true,
+              generating: true,
+              latestUserText: prompt,
+              latestAssistantText: null,
+            });
+          }
+          const answer = prompt.includes("Standards") ? "Standards output" : "Spec output";
+          return Promise.resolve({
+            ready: true,
+            generating: false,
+            latestUserText: prompt,
+            latestAssistantText: `${answer}\n${completionMarker(prompt)}`,
+          });
+        }
+        if (method === "close_tab") {
+          closeCalls += 1;
+          return Promise.resolve({ closed: true });
+        }
+        return Promise.resolve({});
+      },
+    } as BrowserClient;
+    const client = await connect(fakeBrowser);
+
+    const spawned = await client.callTool({
+      name: "spawn_agents",
+      arguments: {
+        request_id: "transient-spawn-lifecycle",
+        tasks: [
+          { agent_id: "standards", prompt: "Standards review" },
+          { agent_id: "spec", prompt: "Spec review" },
+        ],
+        max_concurrency: 2,
+      },
+    });
+    const runId = (spawned.structuredContent as Record<string, unknown>).run_id as string;
+
+    expect(spawned.structuredContent).toMatchObject({
+      state: "RUNNING",
+      jobs: [
+        {
+          agent_id: "standards",
+          state: "FAILED_TRANSIENT",
+          terminal: false,
+          recoverable: true,
+          error: { code: "EXTRACTION_FAILED", retryable: true },
+        },
+        {
+          agent_id: "spec",
+          state: "FAILED_TRANSIENT",
+          terminal: false,
+          recoverable: true,
+          error: { code: "EXTRACTION_FAILED", retryable: true },
+        },
+      ],
+    });
+
+    for (let tick = 0; tick < 2; tick += 1) {
+      const collecting = await client.callTool({ name: "collect_agents", arguments: { run_id: runId } });
+      expect(collecting.structuredContent).toMatchObject({
+        state: "RUNNING",
+        barrier: { satisfied: false },
+        results: [],
+        failed: [],
+        pending: [
+          { agent_id: "standards", state: "GENERATING", terminal: false, recoverable: true },
+          { agent_id: "spec", state: "GENERATING", terminal: false, recoverable: true },
+        ],
+      });
+      expect(closeCalls).toBe(0);
+    }
+
+    const completed = await client.callTool({ name: "collect_agents", arguments: { run_id: runId } });
+    expect(completed.structuredContent).toMatchObject({
+      state: "COMPLETE",
+      barrier: { satisfied: true },
+      failed: [],
+      pending: [],
+      results: [
+        {
+          agent_id: "standards",
+          state: "VERIFIED_DONE",
+          terminal: true,
+          recoverable: false,
+          result: { type: "text", text: "Standards output" },
+        },
+        {
+          agent_id: "spec",
+          state: "VERIFIED_DONE",
+          terminal: true,
+          recoverable: false,
+          result: { type: "text", text: "Spec output" },
+        },
+      ],
+    });
+    expect(closeCalls).toBe(0);
     await client.close();
   });
 
@@ -441,9 +574,12 @@ describe("MCP HTTP server", () => {
     });
     expect(firstCollect.structuredContent).toMatchObject({
       state: "RUNNING",
-      failed: [{
+      failed: [],
+      pending: [{
         agent_id: "recover",
         state: "FAILED_TRANSIENT",
+        terminal: false,
+        recoverable: true,
         error: { code: "EXTRACTION_FAILED", retryable: true },
       }],
     });
@@ -509,6 +645,8 @@ describe("MCP HTTP server", () => {
       failed: [{
         agent_id: "exhaust",
         state: "FAILED_TERMINAL",
+        terminal: true,
+        recoverable: false,
         error: { code: "TIMEOUT", retryable: false },
       }],
       pending: [],
