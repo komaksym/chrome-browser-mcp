@@ -12,7 +12,6 @@ interface RecoveryBrowserOptions {
   read: (state: RecoveryBrowserState, args: Record<string, unknown>) => unknown;
   activate?: (tabId: number, state: RecoveryBrowserState) => unknown;
   reload?: (state: RecoveryBrowserState) => unknown;
-  close?: (tabId: number, state: RecoveryBrowserState) => unknown;
 }
 
 /** Builds a configurable browser boundary for observation-recovery tests. */
@@ -50,9 +49,7 @@ export function createRecoveryBrowser(options: RecoveryBrowserOptions): {
         state.reloads += 1;
         return options.reload?.(state) ?? Promise.resolve({});
       }
-      if (method === "close_tab") {
-        return options.close?.(args.tabId as number, state) ?? Promise.resolve({ closed: true });
-      }
+      if (method === "close_tab") return Promise.resolve({ closed: true });
       return Promise.resolve({});
     },
   } as BrowserClient;
