@@ -23,6 +23,8 @@ let nativePort: chrome.runtime.Port | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectDelay = 500;
 const workerSnapshots = new Map<number, ChatGptWorkerSnapshot>();
+const knownAgentWorkerTabIds = new Set<number>();
+const pendingWorkerCreationsByAnchorTabId = new Map<number, number>();
 
 const SENSITIVE_QUERY_KEY = /(?:access[_-]?token|token|auth|authorization|api[_-]?key|secret|session|code|sig|signature|jwt|credential|password)/i;
 
@@ -157,6 +159,44 @@ function isChatGptTab(tab: chrome.tabs.Tab): boolean {
   }
 }
 
+/** Records one in-flight worker creation for an anchor tab. */
+function beginPendingWorkerCreation(anchorTabId: number): void {
+  pendingWorkerCreationsByAnchorTabId.set(
+    anchorTabId,
+    (pendingWorkerCreationsByAnchorTabId.get(anchorTabId) ?? 0) + 1,
+  );
+}
+
+/** Releases one in-flight worker creation without disturbing concurrent creations for the same anchor. */
+function finishPendingWorkerCreation(anchorTabId: number): void {
+  const pendingCount = pendingWorkerCreationsByAnchorTabId.get(anchorTabId) ?? 0;
+  if (pendingCount <= 1) pendingWorkerCreationsByAnchorTabId.delete(anchorTabId);
+  else pendingWorkerCreationsByAnchorTabId.set(anchorTabId, pendingCount - 1);
+}
+
+/** Returns whether a tab was opened by an anchor whose worker creation is still in flight. */
+function isAgentWorkerCreationInFlight(tab: chrome.tabs.Tab): boolean {
+  return (
+    tab.openerTabId !== undefined &&
+    (pendingWorkerCreationsByAnchorTabId.get(tab.openerTabId) ?? 0) > 0
+  );
+}
+
+/** Accepts only ordinary non-worker ChatGPT tabs as run anchors. */
+function isEligibleAgentAnchor(
+  tab: chrome.tabs.Tab,
+  excludedTabIds: Set<number>,
+): tab is chrome.tabs.Tab & { id: number } {
+  return (
+    tab.id !== undefined &&
+    !tab.incognito &&
+    !excludedTabIds.has(tab.id) &&
+    !knownAgentWorkerTabIds.has(tab.id) &&
+    !isAgentWorkerCreationInFlight(tab) &&
+    isChatGptTab(tab)
+  );
+}
+
 /** Resolves or revalidates the stable parent ChatGPT tab for a worker run. */
 async function resolveChatGptAnchor(params: Record<string, unknown>) {
   const anchorTabId = numberParam(params, "anchorTabId", -1);
@@ -167,7 +207,7 @@ async function resolveChatGptAnchor(params: Record<string, unknown>) {
     } catch {
       throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer available");
     }
-    if (tab.id === undefined || tab.incognito || !isChatGptTab(tab)) {
+    if (!isEligibleAgentAnchor(tab, new Set())) {
       throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer eligible");
     }
     return { tab: serializeTab(tab) };
@@ -180,7 +220,7 @@ async function resolveChatGptAnchor(params: Record<string, unknown>) {
   );
   const tabs = await chrome.tabs.query({ windowType: "normal" });
   const candidates = tabs
-    .filter((tab) => tab.id !== undefined && !tab.incognito && !excluded.has(tab.id) && isChatGptTab(tab))
+    .filter((tab) => isEligibleAgentAnchor(tab, excluded))
     .sort((left, right) => {
       const leftAccessed = left.lastAccessed ?? 0;
       const rightAccessed = right.lastAccessed ?? 0;
@@ -189,6 +229,61 @@ async function resolveChatGptAnchor(params: Record<string, unknown>) {
   const tab = candidates[0];
   if (!tab) throw new Error("ANCHOR_UNAVAILABLE: No eligible parent ChatGPT tab is available");
   return { tab: serializeTab(tab) };
+}
+
+/** Creates one private worker from its stored parent, retrying only when the parent moves during creation. */
+async function openAgentWorkerTab(anchorTabId: number) {
+  if (!Number.isInteger(anchorTabId) || anchorTabId <= 0) {
+    throw new Error("INVALID_ARGUMENT: anchorTabId is required");
+  }
+
+  beginPendingWorkerCreation(anchorTabId);
+  try {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let anchor: chrome.tabs.Tab;
+      try {
+        anchor = await chrome.tabs.get(anchorTabId);
+      } catch {
+        throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer available");
+      }
+      if (!isEligibleAgentAnchor(anchor, new Set())) {
+        throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer eligible");
+      }
+
+      try {
+        const tab = await chrome.tabs.create({
+          url: "https://chatgpt.com/",
+          active: false,
+          windowId: anchor.windowId,
+          openerTabId: anchorTabId,
+        });
+        if (tab.id === undefined || tab.id <= 0) {
+          throw new Error("CHATGPT_AGENT_START_FAILED: invalid tab ID");
+        }
+        if (tab.incognito) {
+          await chrome.tabs.remove(tab.id).catch(() => undefined);
+          throw new Error("INCOGNITO_DISABLED: Incognito tabs are excluded");
+        }
+        knownAgentWorkerTabIds.add(tab.id);
+        return { tab: serializeTab(tab) };
+      } catch (error) {
+        let currentAnchor: chrome.tabs.Tab;
+        try {
+          currentAnchor = await chrome.tabs.get(anchorTabId);
+        } catch {
+          throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer available");
+        }
+        if (!isEligibleAgentAnchor(currentAnchor, new Set())) {
+          throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer eligible");
+        }
+        if (currentAnchor.windowId !== anchor.windowId && attempt < 2) continue;
+        throw error;
+      }
+    }
+    throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab moved during worker creation");
+  } finally {
+    finishPendingWorkerCreation(anchorTabId);
+  }
 }
 
 /** Returns one readable tab and optionally requires the ChatGPT worker origin. */
@@ -351,6 +446,8 @@ async function execute(method: BrowserMethod, params: Record<string, unknown>): 
     }
     case "resolve_chatgpt_anchor":
       return resolveChatGptAnchor(params);
+    case "open_agent_worker_tab":
+      return openAgentWorkerTab(numberParam(params, "anchorTabId", -1));
     case "search_tabs": {
       const query = (typeof params.query === "string" ? params.query : "").trim().toLocaleLowerCase();
       const maxResults = Math.min(100, Math.max(1, numberParam(params, "maxResults", 20)));
@@ -483,6 +580,9 @@ function scheduleReconnect(): void {
   reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
 }
 
+chrome.tabs.onRemoved.addListener((tabId) => {
+  knownAgentWorkerTabIds.delete(tabId);
+});
 chrome.runtime.onInstalled.addListener(connectNative);
 chrome.runtime.onStartup.addListener(connectNative);
 connectNative();

@@ -344,17 +344,8 @@ export class AgentRuntime {
         try {
             let tabId = job.tabId;
             if (tabId === undefined) {
-                const anchor = await this.browser.request("resolve_chatgpt_anchor", {
+                const opened = await this.browser.request("open_agent_worker_tab", {
                     anchorTabId: run.anchorTabId,
-                });
-                const windowId = anchor.tab?.windowId;
-                if (!Number.isInteger(windowId) || windowId < 0) {
-                    throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab has no valid window");
-                }
-                const opened = await this.browser.request("new_tab", {
-                    url: "https://chatgpt.com/",
-                    active: false,
-                    windowId,
                 });
                 tabId = opened.tab.tabId;
                 if (!Number.isInteger(tabId) || tabId <= 0) {
