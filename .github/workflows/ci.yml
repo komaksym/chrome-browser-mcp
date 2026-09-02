@@ -34,41 +34,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          cat > .github/workflows/ci.yml <<'RESTORE_WORKFLOW'
-name: CI
-on:
-  pull_request:
-  push:
-    branches: [main]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run version:check
-      - run: chmod +x scripts/*.sh
-      - run: sudo apt-get update && sudo apt-get install -y xvfb
-      - run: npx playwright install chromium
-      - run: npm run typecheck
-      - run: npm run lint
-      - run: npm test
-      - run: npm run artifacts:check
-      - run: npm audit --audit-level=high
-      - name: Real Chromium E2E
-        run: |
-          sudo mkdir -p /etc/chromium/native-messaging-hosts /etc/opt/chrome/native-messaging-hosts
-          sudo chmod 777 /etc/chromium/native-messaging-hosts /etc/opt/chrome/native-messaging-hosts
-          CHROME_NATIVE_HOST_DIRS="/etc/chromium/native-messaging-hosts:/etc/opt/chrome/native-messaging-hosts" npm run test:e2e
-RESTORE_WORKFLOW
-          git add dist .github/workflows/ci.yml
+          git add dist
           git commit -m "Build runtime artifacts"
           git push origin HEAD:${{ github.head_ref }}
       - run: npm audit --audit-level=high
