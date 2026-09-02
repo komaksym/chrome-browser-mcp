@@ -545,7 +545,7 @@ export class AgentRuntime {
     run: AgentRun,
     job: AgentJob,
     step: string,
-    operation: () => Promise<Value>,
+    operation: () => Value | Promise<Value>,
   ): Promise<Value | undefined> {
     try {
       return await operation();
@@ -577,7 +577,7 @@ export class AgentRuntime {
     job.diagnostics.uncertainty_reason = "completion marker missing after generation appeared finished";
     job.diagnostics.recovery_steps = ["current_state"];
 
-    const currentAccepted = await this.recoveryAttempt(run, job, "current_state", async () =>
+    const currentAccepted = await this.recoveryAttempt(run, job, "current_state", () =>
       this.acceptObservation(job, job.bestObservation ?? initial),
     );
     if (run.cancellationRequested || currentAccepted || Boolean(job.result)) return;
