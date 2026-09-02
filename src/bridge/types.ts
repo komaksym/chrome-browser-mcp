@@ -5,6 +5,7 @@ export type BrowserMethod =
   | "read_tab"
   | "read_tabs"
   | "search_tabs"
+  | "resolve_chatgpt_anchor"
   | "click"
   | "type"
   | "press_key"
@@ -15,6 +16,7 @@ export type BrowserMethod =
   | "select_option"
   | "chatgpt_worker_submit"
   | "read_chatgpt_worker"
+  | "read_chatgpt_worker_snapshot"
   | "activate_worker_tab"
   | "reload_worker_tab";
 
@@ -38,7 +40,25 @@ export interface NativeReady {
   extensionId: string;
 }
 
-export type IncomingNativeMessage = NativeResponse | NativeReady;
+export interface ChatGptWorkerSnapshot {
+  ready: boolean;
+  generating: boolean;
+  latestUserText: string | null;
+  latestUserTruncated: boolean;
+  latestAssistantText: string | null;
+  latestAssistantTruncated: boolean;
+  revision: number;
+  timestamp: number;
+}
+
+export interface NativeChatGptWorkerSnapshotEvent {
+  type: "event";
+  event: "chatgpt_worker_snapshot";
+  tabId: number;
+  snapshot: ChatGptWorkerSnapshot;
+}
+
+export type IncomingNativeMessage = NativeResponse | NativeReady | NativeChatGptWorkerSnapshotEvent;
 
 export interface TabSummary {
   tabId: number;

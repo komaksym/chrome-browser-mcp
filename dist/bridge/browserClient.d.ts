@@ -1,5 +1,5 @@
 import type { Readable, Writable } from "node:stream";
-import type { BrowserMethod } from "./types.js";
+import type { BrowserMethod, ChatGptWorkerSnapshot } from "./types.js";
 /** Represents a browser-bridge failure with a stable machine-readable code. */
 export declare class BrowserError extends Error {
     readonly code: string;
@@ -11,6 +11,7 @@ export declare class BrowserClient {
     private readonly output;
     private readonly timeoutMs;
     private readonly pending;
+    private readonly chatGptWorkerSnapshots;
     private ready;
     private extensionVersion;
     private extensionId;
@@ -22,10 +23,16 @@ export declare class BrowserClient {
         extensionVersion: string | null;
         extensionId: string | null;
     };
+    /** Returns the latest validated ephemeral ChatGPT worker snapshot for one tab. */
+    latestChatGptWorkerSnapshot(tabId: number): ChatGptWorkerSnapshot | undefined;
+    /** Removes the ephemeral ChatGPT worker snapshot retained for one tab. */
+    forgetChatGptWorkerSnapshot(tabId: number): void;
     /** Sends one browser request and resolves it with the matching Native Messaging response. */
     request<T>(method: BrowserMethod, params?: Record<string, unknown>): Promise<T>;
     /** Routes a single decoded Native Messaging frame to connection state or its pending request. */
     private handleMessage;
+    /** Caches one newer, bounded worker snapshot from an unsolicited native event. */
+    private cacheChatGptWorkerSnapshot;
     /** Rejects all pending requests after the Native Messaging transport becomes unusable. */
     private failAll;
 }

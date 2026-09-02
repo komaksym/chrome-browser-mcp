@@ -2,7 +2,7 @@
 
 A local bridge that lets a private ChatGPT developer-mode app inspect and control the tabs already open in your desktop Google Chrome.
 
-Current patch version: **0.1.4**. Every patch must bump this version; CI rejects patches that do not.
+Current patch version: **0.1.6**. Every patch must bump this version; CI rejects patches that do not.
 
 The bridge exposes 18 MCP tools:
 
@@ -10,7 +10,7 @@ The bridge exposes 18 MCP tools:
 - actions: `click`, `type`, `fill_form`, `press_key`, `scroll`, `select_option`, `navigate`, `new_tab`, `close_tab`
 - ChatGPT job runtime: `spawn_agents`, `collect_agents`, `cancel_agents`
 
-`spawn_agents` starts one or more background ChatGPT worker jobs and returns stable `run_id` / `job_id` / `task_id` / `agent_id` identities. `collect_agents` returns only results whose worker identity and unique completion marker were verified; `cancel_agents` cancels unfinished jobs and closes only worker tabs registered to that run. Browser tab IDs stay private to the runtime.
+`spawn_agents` starts one or more background ChatGPT worker jobs and returns stable `request_id` / `run_id` / `job_id` / `task_id` / `agent_id` identities. Callers must reuse the same `request_id` with equivalent `tasks` and `max_concurrency` arguments when retrying; equivalent retries replay the original run, while conflicting reuse fails with `IDEMPOTENCY_CONFLICT`. `max_concurrency` limits active workers within one run, and the runtime applies a separate two-worker global active ceiling by default, queueing excess logical jobs. While a worker responds, bounded in-memory snapshots preserve streaming output across ChatGPT DOM virtualization; collection still requires exact worker identity and the unique completion marker, and snapshots are never written to browser storage. `collect_agents` returns only results whose worker identity and unique completion marker were verified; `cancel_agents` cancels unfinished jobs and closes only worker tabs registered to that run. Browser tab IDs stay private to the runtime.
 
 Action targets accept either a CSS selector or exact visible text / `aria-label` / placeholder / name / associated label text. Ambiguous targets fail instead of guessing.
 
@@ -61,7 +61,7 @@ Chrome starts the native host when the extension connects. The native host start
 ## Requirements
 
 - macOS
-- Google Chrome 120+
+- Google Chrome 121+
 - Node.js 20+
 - A ChatGPT account with Developer Mode available
 - An OpenAI Platform tunnel ID and runtime API key with Tunnels Read + Use
@@ -107,7 +107,7 @@ Then open `chrome://extensions` and click **Update**. Do not select the extensio
 
 `git pull` updates both `dist/extension` (what Chrome loads) and `dist/bridge` (what the native host executes). Clicking **Update** reloads the unpacked extension/native-messaging connection so the newly pulled runtime is used.
 
-The visible extension version must change on every patch. For this patch it must show **0.1.4**. If it still shows an older version, the pulled runtime was not applied.
+The visible extension version must change on every patch. For this patch it must show **0.1.6**. If it still shows an older version, the pulled runtime was not applied.
 
 ## 3. Verify the local browser chain
 

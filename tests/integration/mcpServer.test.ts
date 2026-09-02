@@ -39,6 +39,7 @@ describe("MCP HTTP server", () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toEqual([
       "browser_status",
+      "spawn_agents",
       "list_tabs",
       "get_active_tab",
       "read_tab",
@@ -53,7 +54,6 @@ describe("MCP HTTP server", () => {
       "navigate",
       "new_tab",
       "close_tab",
-      "spawn_agents",
       "collect_agents",
       "cancel_agents",
     ]);
@@ -68,6 +68,46 @@ describe("MCP HTTP server", () => {
     await client.close();
   });
 
+  it("replays an equivalent MCP spawn request and rejects conflicting reuse", async () => {
+    let tabOpenCalls = 0;
+    let submissionCalls = 0;
+    const fakeBrowser = {
+      status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
+      request: (method: string) => {
+        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        if (method === "new_tab") {
+          tabOpenCalls += 1;
+          return Promise.resolve({ tab: { tabId: 80 + tabOpenCalls } });
+        }
+        if (method === "chatgpt_worker_submit") {
+          submissionCalls += 1;
+          return Promise.resolve({ submitted: true });
+        }
+        return Promise.resolve({});
+      },
+    } as BrowserClient;
+    const client = await connect(fakeBrowser);
+    const argumentsForRequest = {
+      request_id: "mcp-request-1",
+      tasks: [{ agent_id: "one", prompt: "do this once" }],
+      max_concurrency: 1,
+    };
+
+    const first = await client.callTool({ name: "spawn_agents", arguments: argumentsForRequest });
+    const replay = await client.callTool({ name: "spawn_agents", arguments: argumentsForRequest });
+    const conflict = await client.callTool({
+      name: "spawn_agents",
+      arguments: { ...argumentsForRequest, tasks: [{ agent_id: "one", prompt: "do something else" }] },
+    });
+
+    expect(replay.structuredContent).toEqual(first.structuredContent);
+    expect(conflict.isError).toBe(true);
+    expect(JSON.stringify(conflict.content)).toContain("IDEMPOTENCY_CONFLICT");
+    expect(tabOpenCalls).toBe(1);
+    expect(submissionCalls).toBe(1);
+    await client.close();
+  });
+
   it("queues excess workers and returns results only after identity and completion validation", async () => {
     const submitted = new Map<number, string>();
     let nextTabId = 77;
@@ -75,6 +115,7 @@ describe("MCP HTTP server", () => {
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         requests.push({ method, args });
         if (method === "new_tab") {
           const tabId = nextTabId++;
@@ -118,6 +159,7 @@ describe("MCP HTTP server", () => {
     const spawned = await client.callTool({
       name: "spawn_agents",
       arguments: {
+        request_id: "tool-order-and-queue",
         tasks: [
           { agent_id: "architecture", prompt: "Review the architecture" },
           { agent_id: "security", prompt: "Review the security" },
@@ -197,11 +239,68 @@ describe("MCP HTTP server", () => {
     expect(JSON.stringify(secondCollect.structuredContent)).toContain("untrusted");
     await client.close();
   });
+
+  it("completes a job from a fresh streamed snapshot after the assistant DOM is virtualized", async () => {
+    let submittedPrompt = "";
+    let directReads = 0;
+    let snapshot: Record<string, unknown> | undefined;
+    const fakeBrowser = {
+      status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 88 } });
+        if (method === "chatgpt_worker_submit") {
+          submittedPrompt = args.prompt as string;
+          snapshot = {
+            ready: true,
+            generating: false,
+            latestUserText: submittedPrompt,
+            latestUserTruncated: false,
+            latestAssistantText: `Snapshot answer\n${completionMarker(submittedPrompt)}`,
+            latestAssistantTruncated: false,
+            revision: 2,
+            timestamp: Date.now() + 10,
+          };
+          return Promise.resolve({ submitted: true, snapshot: { revision: 1, timestamp: Date.now() } });
+        }
+        if (method === "read_chatgpt_worker") {
+          directReads += 1;
+          return Promise.reject(new Error("EXTRACTION_FAILED: assistant node was virtualized"));
+        }
+        if (method === "close_tab") return Promise.resolve({ closed: true });
+        return Promise.resolve({});
+      },
+      latestChatGptWorkerSnapshot: () => snapshot,
+      forgetChatGptWorkerSnapshot: () => undefined,
+    } as unknown as BrowserClient;
+    const client = await connect(fakeBrowser);
+
+    const spawned = await client.callTool({
+      name: "spawn_agents",
+      arguments: { request_id: "snapshot-worker", tasks: [{ agent_id: "snapshot", prompt: "answer once" }], max_concurrency: 1 },
+    });
+    const runId = (spawned.structuredContent as Record<string, unknown>).run_id as string;
+
+    const collected = await client.callTool({ name: "collect_agents", arguments: { run_id: runId } });
+
+    expect(directReads).toBe(0);
+    expect(collected.structuredContent).toMatchObject({
+      run_id: runId,
+      state: "COMPLETE",
+      barrier: { satisfied: true },
+      results: [{ agent_id: "snapshot", result: { type: "text", text: "Snapshot answer" } }],
+      failed: [],
+      pending: [],
+    });
+    await client.close();
+  });
+
   it("retries transient worker submission failures but surfaces terminal failures", async () => {
     let transientAttempts = 0;
     const transientBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         if (method === "new_tab") return Promise.resolve({ tab: { tabId: 91 } });
         if (method === "chatgpt_worker_submit") {
           transientAttempts += 1;
@@ -217,7 +316,7 @@ describe("MCP HTTP server", () => {
 
     const transient = await transientClient.callTool({
       name: "spawn_agents",
-      arguments: { tasks: [{ agent_id: "retry", prompt: "work" }], max_concurrency: 1 },
+      arguments: { request_id: "submission-retry", tasks: [{ agent_id: "retry", prompt: "work" }], max_concurrency: 1 },
     });
     expect(transient.structuredContent).toMatchObject({
       state: "RUNNING",
@@ -230,6 +329,7 @@ describe("MCP HTTP server", () => {
     const terminalBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         if (method === "new_tab") return Promise.resolve({ tab: { tabId: 92 } });
         if (method === "chatgpt_worker_submit") {
           terminalAttempts += 1;
@@ -242,7 +342,7 @@ describe("MCP HTTP server", () => {
 
     const terminal = await terminalClient.callTool({
       name: "spawn_agents",
-      arguments: { tasks: [{ agent_id: "terminal", prompt: "work" }], max_concurrency: 1 },
+      arguments: { request_id: "terminal-submission", tasks: [{ agent_id: "terminal", prompt: "work" }], max_concurrency: 1 },
     });
     expect(terminal.structuredContent).toMatchObject({
       state: "FAILED",
@@ -269,6 +369,7 @@ describe("MCP HTTP server", () => {
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         if (method === "new_tab") {
           openedTabs += 1;
           return Promise.resolve({ tab: { tabId: nextTabId++ } });
@@ -297,7 +398,7 @@ describe("MCP HTTP server", () => {
 
     const spawned = await client.callTool({
       name: "spawn_agents",
-      arguments: { tasks: [{ agent_id: "recover", prompt: "work" }], max_concurrency: 1 },
+      arguments: { request_id: "collection-retry", tasks: [{ agent_id: "recover", prompt: "work" }], max_concurrency: 1 },
     });
     const runId = (spawned.structuredContent as Record<string, unknown>).run_id as string;
 
@@ -340,6 +441,7 @@ describe("MCP HTTP server", () => {
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         if (method === "new_tab") return Promise.resolve({ tab: { tabId: 111 } });
         if (method === "chatgpt_worker_submit") {
           submittedPrompt = args.prompt as string;
@@ -360,7 +462,7 @@ describe("MCP HTTP server", () => {
 
     const spawned = await client.callTool({
       name: "spawn_agents",
-      arguments: { tasks: [{ agent_id: "exhaust", prompt: "work" }], max_concurrency: 1 },
+      arguments: { request_id: "collection-exhaustion", tasks: [{ agent_id: "exhaust", prompt: "work" }], max_concurrency: 1 },
     });
     const runId = (spawned.structuredContent as Record<string, unknown>).run_id as string;
 
@@ -389,6 +491,7 @@ describe("MCP HTTP server", () => {
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         if (method === "new_tab") return Promise.resolve({ tab: { tabId: nextTabId++ } });
         if (method === "chatgpt_worker_submit") {
           submitted.set(args.tabId as number, args.prompt as string);
@@ -413,6 +516,7 @@ describe("MCP HTTP server", () => {
     const spawned = await client.callTool({
       name: "spawn_agents",
       arguments: {
+        request_id: "cancellation",
         tasks: [
           { agent_id: "done", prompt: "finish first" },
           { agent_id: "cancelled", prompt: "wait second" },
@@ -459,6 +563,7 @@ describe("MCP HTTP server", () => {
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         if (method === "new_tab") return Promise.resolve({ tab: { tabId: 121 } });
         if (method === "chatgpt_worker_submit") {
           submitCalls += 1;
@@ -485,7 +590,7 @@ describe("MCP HTTP server", () => {
 
     const spawned = await client.callTool({
       name: "spawn_agents",
-      arguments: { tasks: [{ agent_id: "idempotent", prompt: "work" }], max_concurrency: 1 },
+      arguments: { request_id: "lost-ack", tasks: [{ agent_id: "idempotent", prompt: "work" }], max_concurrency: 1 },
     });
 
     expect(spawned.structuredContent).toMatchObject({
@@ -502,6 +607,7 @@ describe("MCP HTTP server", () => {
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         if (method === "new_tab") return Promise.resolve({ tab: { tabId: 131 } });
         if (method === "chatgpt_worker_submit") {
           submitCalls += 1;
@@ -521,7 +627,7 @@ describe("MCP HTTP server", () => {
 
     const spawned = await client.callTool({
       name: "spawn_agents",
-      arguments: { tasks: [{ agent_id: "closed", prompt: "work" }], max_concurrency: 1 },
+      arguments: { request_id: "closed-worker", tasks: [{ agent_id: "closed", prompt: "work" }], max_concurrency: 1 },
     });
 
     expect(spawned.structuredContent).toMatchObject({
@@ -542,6 +648,7 @@ describe("MCP HTTP server", () => {
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         requests.push({ method, args });
         if (method === "new_tab") return Promise.resolve({ tab: { tabId: 701 } });
         if (method === "chatgpt_worker_submit") {
@@ -576,7 +683,7 @@ describe("MCP HTTP server", () => {
 
     await client.callTool({
       name: "spawn_agents",
-      arguments: { tasks: [{ agent_id: "private", prompt: "stay private" }], max_concurrency: 1 },
+      arguments: { request_id: "private-worker", tasks: [{ agent_id: "private", prompt: "stay private" }], max_concurrency: 1 },
     });
     const listed = await client.callTool({ name: "list_tabs", arguments: {} });
 
