@@ -29,7 +29,7 @@ it("keeps cancellation authoritative when a recovery read finishes late", async 
   const browser = {
     request: (method: string, args: Record<string, unknown> = {}) => {
       if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
-      if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
+      if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
       if (method === "chatgpt_worker_submit") {
         submissions += 1;
         submittedPrompt = args.prompt as string;
