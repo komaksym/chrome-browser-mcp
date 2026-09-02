@@ -5,6 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { startHttpMcpServer } from "../../src/bridge/mcpServer.js";
 import type { BrowserClient } from "../../src/bridge/browserClient.js";
+import { withAgentAnchor } from "../agentBrowserFixture.js";
 
 const servers: Array<{ close: (callback: () => void) => void }> = [];
 afterEach(async () => {
@@ -74,8 +75,8 @@ describe("MCP HTTP server", () => {
     const requests: Array<{ method: string; args: Record<string, unknown> }> = [];
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
-      request: (method: string, args: Record<string, unknown> = {}) => {
-        if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+      request: withAgentAnchor((method: string, args: Record<string, unknown> = {}) => {
+
         requests.push({ method, args });
         if (method === "open_agent_worker_tab") {
           const tabId = nextTabId++;
@@ -112,7 +113,7 @@ describe("MCP HTTP server", () => {
         }
         if (method === "close_tab") return Promise.resolve({ closed: true });
         return Promise.resolve({ method, args });
-      },
+      }, { tabId: 9000, windowId: 42 }),
     } as BrowserClient;
     const client = await connect(fakeBrowser);
 
@@ -202,8 +203,8 @@ describe("MCP HTTP server", () => {
     let transientAttempts = 0;
     const transientBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
-      request: (method: string) => {
-        if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+      request: withAgentAnchor((method: string) => {
+
         if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 91 } });
         if (method === "chatgpt_worker_submit") {
           transientAttempts += 1;
@@ -213,7 +214,7 @@ describe("MCP HTTP server", () => {
           return Promise.resolve({ submitted: true });
         }
         return Promise.resolve({});
-      },
+      }, { tabId: 9000, windowId: 42 }),
     } as BrowserClient;
     const transientClient = await connect(transientBrowser);
 
@@ -231,15 +232,15 @@ describe("MCP HTTP server", () => {
     let terminalAttempts = 0;
     const terminalBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
-      request: (method: string) => {
-        if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+      request: withAgentAnchor((method: string) => {
+
         if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 92 } });
         if (method === "chatgpt_worker_submit") {
           terminalAttempts += 1;
           return Promise.reject(new Error("CHATGPT_UNSUPPORTED_PAGE: wrong origin"));
         }
         return Promise.resolve({});
-      },
+      }, { tabId: 9000, windowId: 42 }),
     } as BrowserClient;
     const terminalClient = await connect(terminalBrowser);
 
@@ -271,8 +272,8 @@ describe("MCP HTTP server", () => {
     let submittedPrompt = "";
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
-      request: (method: string, args: Record<string, unknown> = {}) => {
-        if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+      request: withAgentAnchor((method: string, args: Record<string, unknown> = {}) => {
+
         if (method === "open_agent_worker_tab") {
           openedTabs += 1;
           return Promise.resolve({ tab: { tabId: nextTabId++ } });
@@ -295,7 +296,7 @@ describe("MCP HTTP server", () => {
         }
         if (method === "close_tab") return Promise.resolve({ closed: true });
         return Promise.resolve({});
-      },
+      }, { tabId: 9000, windowId: 42 }),
     } as BrowserClient;
     const client = await connect(fakeBrowser);
 
@@ -343,8 +344,8 @@ describe("MCP HTTP server", () => {
     let closeCalls = 0;
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
-      request: (method: string, args: Record<string, unknown> = {}) => {
-        if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+      request: withAgentAnchor((method: string, args: Record<string, unknown> = {}) => {
+
         if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 111 } });
         if (method === "chatgpt_worker_submit") {
           submittedPrompt = args.prompt as string;
@@ -359,7 +360,7 @@ describe("MCP HTTP server", () => {
           return Promise.resolve({ closed: true });
         }
         return Promise.resolve({});
-      },
+      }, { tabId: 9000, windowId: 42 }),
     } as BrowserClient;
     const client = await connect(fakeBrowser);
 
@@ -393,8 +394,8 @@ describe("MCP HTTP server", () => {
     let nextTabId = 201;
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
-      request: (method: string, args: Record<string, unknown> = {}) => {
-        if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+      request: withAgentAnchor((method: string, args: Record<string, unknown> = {}) => {
+
         if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: nextTabId++ } });
         if (method === "chatgpt_worker_submit") {
           submitted.set(args.tabId as number, args.prompt as string);
@@ -412,7 +413,7 @@ describe("MCP HTTP server", () => {
         }
         if (method === "close_tab") return Promise.resolve({ closed: true });
         return Promise.resolve({});
-      },
+      }, { tabId: 9000, windowId: 42 }),
     } as BrowserClient;
     const client = await connect(fakeBrowser);
 
@@ -464,8 +465,8 @@ describe("MCP HTTP server", () => {
     let submittedPrompt = "";
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
-      request: (method: string, args: Record<string, unknown> = {}) => {
-        if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+      request: withAgentAnchor((method: string, args: Record<string, unknown> = {}) => {
+
         if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 121 } });
         if (method === "chatgpt_worker_submit") {
           submitCalls += 1;
@@ -486,7 +487,7 @@ describe("MCP HTTP server", () => {
         }
         if (method === "close_tab") return Promise.resolve({ closed: true });
         return Promise.resolve({});
-      },
+      }, { tabId: 9000, windowId: 42 }),
     } as BrowserClient;
     const client = await connect(fakeBrowser);
 
@@ -508,8 +509,8 @@ describe("MCP HTTP server", () => {
     let submitCalls = 0;
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
-      request: (method: string) => {
-        if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+      request: withAgentAnchor((method: string) => {
+
         if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 131 } });
         if (method === "chatgpt_worker_submit") {
           submitCalls += 1;
@@ -523,7 +524,7 @@ describe("MCP HTTP server", () => {
         }
         if (method === "close_tab") return Promise.resolve({ closed: true });
         return Promise.resolve({});
-      },
+      }, { tabId: 9000, windowId: 42 }),
     } as BrowserClient;
     const client = await connect(fakeBrowser);
 
@@ -549,8 +550,8 @@ describe("MCP HTTP server", () => {
     let submittedPrompt = "";
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
-      request: (method: string, args: Record<string, unknown> = {}) => {
-        if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+      request: withAgentAnchor((method: string, args: Record<string, unknown> = {}) => {
+
         requests.push({ method, args });
         if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 701 } });
         if (method === "chatgpt_worker_submit") {
@@ -579,7 +580,7 @@ describe("MCP HTTP server", () => {
           });
         }
         return Promise.resolve({});
-      },
+      }, { tabId: 9000, windowId: 42 }),
     } as BrowserClient;
     const client = await connect(fakeBrowser);
 
