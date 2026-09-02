@@ -85,6 +85,8 @@ declare function publicJob(job: AgentJob): {
     agent_id: string;
     task_id: string;
     state: AgentState;
+    terminal: boolean;
+    recoverable: boolean;
 };
 /** Coordinates private browser-backed jobs with bounded concurrency and verified outputs. */
 export declare class AgentRuntime {
@@ -109,12 +111,15 @@ export declare class AgentRuntime {
             satisfied: boolean;
         };
         results: {
+            result: AgentResult;
             diagnostics?: ObservationDiagnostics | undefined;
+            error?: AgentError | undefined;
             job_id: string;
             agent_id: string;
             task_id: string;
             state: AgentState;
-            result: AgentResult;
+            terminal: boolean;
+            recoverable: boolean;
         }[];
         failed: {
             diagnostics?: ObservationDiagnostics | undefined;
@@ -123,6 +128,8 @@ export declare class AgentRuntime {
             agent_id: string;
             task_id: string;
             state: AgentState;
+            terminal: boolean;
+            recoverable: boolean;
         }[];
         pending: {
             diagnostics?: ObservationDiagnostics | undefined;
@@ -131,6 +138,8 @@ export declare class AgentRuntime {
             agent_id: string;
             task_id: string;
             state: AgentState;
+            terminal: boolean;
+            recoverable: boolean;
         }[];
     }>;
     /** Requests cancellation immediately, then serializes tab cleanup with any in-flight collection. */
@@ -144,6 +153,8 @@ export declare class AgentRuntime {
             agent_id: string;
             task_id: string;
             state: AgentState;
+            terminal: boolean;
+            recoverable: boolean;
         }[];
     }>;
     /** Runs an operation after all prior state transitions for the same run have settled. */
