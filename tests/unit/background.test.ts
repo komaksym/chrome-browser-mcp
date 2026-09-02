@@ -280,7 +280,7 @@ describe("extension background worker commands", () => {
     });
     await createStarted;
 
-    vi.mocked(chromeApi.tabs.query).mockResolvedValue([worker, parent]);
+    (chromeApi.tabs.query as unknown as { mockResolvedValue: (value: chrome.tabs.Tab[]) => void }).mockResolvedValue([worker, parent]);
     const whilePending = await request("resolve_chatgpt_anchor", {});
     expect(whilePending).toMatchObject({ result: { tab: { tabId: 47 } } });
 
@@ -311,11 +311,11 @@ describe("extension background worker commands", () => {
       index: 0,
     } as chrome.tabs.Tab;
     tabs.set(47, parent);
-    vi.mocked(chromeApi.tabs.create)
-      .mockImplementationOnce(async () => {
-        tabs.set(47, { ...parent, windowId: 6 });
-        throw new Error("opener tab moved");
-      })
+    vi.mocked(chromeApi.tabs.create).mockImplementationOnce(async () => {
+      tabs.set(47, { ...parent, windowId: 6 });
+      throw new Error("opener tab moved");
+    });
+    (chromeApi.tabs.create as unknown as { mockResolvedValueOnce: (value: chrome.tabs.Tab) => void })
       .mockResolvedValueOnce({ ...parent, id: 88, windowId: 6, openerTabId: 47 } as chrome.tabs.Tab);
 
     const response = await request("open_agent_worker_tab", { anchorTabId: 47 });
