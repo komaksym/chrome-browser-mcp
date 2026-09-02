@@ -239,6 +239,66 @@ describe("extension background worker commands", () => {
     });
   });
 
+  it("never promotes an in-flight or known worker tab to the next run anchor", async () => {
+    const parent = {
+      id: 47,
+      url: "https://chatgpt.com/c/parent",
+      lastAccessed: 100,
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 4,
+      index: 0,
+    } as chrome.tabs.Tab;
+    const worker = {
+      ...parent,
+      id: 88,
+      url: "https://chatgpt.com/",
+      openerTabId: 47,
+      lastAccessed: 300,
+    } as chrome.tabs.Tab;
+    tabs.set(47, parent);
+
+    let signalCreateStarted!: () => void;
+    const createStarted = new Promise<void>((resolve) => {
+      signalCreateStarted = resolve;
+    });
+    let finishCreate!: (tab: chrome.tabs.Tab) => void;
+    vi.mocked(chromeApi.tabs.create).mockImplementation(() => {
+      signalCreateStarted();
+      return new Promise<chrome.tabs.Tab>((resolve) => {
+        finishCreate = resolve;
+      });
+    });
+
+    nativeMessageListener?.({
+      type: "request",
+      id: "pending-worker-open",
+      method: "open_agent_worker_tab",
+      params: { anchorTabId: 47 },
+    });
+    await createStarted;
+
+    vi.mocked(chromeApi.tabs.query).mockResolvedValue([worker, parent]);
+    const whilePending = await request("resolve_chatgpt_anchor", {});
+    expect(whilePending).toMatchObject({ result: { tab: { tabId: 47 } } });
+
+    finishCreate(worker);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await Promise.resolve();
+      if (nativeMessages.some(
+        (message) =>
+          typeof message === "object" &&
+          message !== null &&
+          (message as { id?: string }).id === "pending-worker-open",
+      )) break;
+    }
+
+    const afterCreation = await request("resolve_chatgpt_anchor", {});
+    expect(afterCreation).toMatchObject({ result: { tab: { tabId: 47 } } });
+  });
+
   it("retries worker creation when the parent moves windows during creation", async () => {
     const parent = {
       id: 47,
