@@ -10,7 +10,7 @@ await build({
   bundle: true,
   format: "esm",
   platform: "browser",
-  target: "chrome121",
+  target: "chrome120",
   sourcemap: true,
 });
 const manifest = {
