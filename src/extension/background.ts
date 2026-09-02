@@ -50,8 +50,8 @@ async function resolveAgentAnchor(params: Record<string, unknown>) {
   const candidates = tabs
     .filter((tab) => isChatGptAnchorCandidate(tab, excluded))
     .sort((left, right) => {
-      const l = (left as chrome.tabs.Tab & { lastAccessed?: number }).lastAccessed ?? 0;
-      const r = (right as chrome.tabs.Tab & { lastAccessed?: number }).lastAccessed ?? 0;
+      const l = left.lastAccessed ?? 0;
+      const r = right.lastAccessed ?? 0;
       return r - l;
     });
   const tab = candidates[0];
