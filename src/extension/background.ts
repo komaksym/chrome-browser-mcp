@@ -1,26 +1,8 @@
+import type { BrowserMethod } from "../bridge/types.js";
 import { performPageAction, type PageAction } from "./actions.js";
 import { extractPage } from "./extractor.js";
 import { runChatGptWorkerCommand, type ChatGptWorkerCommand } from "./chatgptWorker.js";
 
-type BrowserMethod =
-  | "browser_status"
-  | "list_tabs"
-  | "get_active_tab"
-  | "read_tab"
-  | "read_tabs"
-  | "search_tabs"
-  | "click"
-  | "type"
-  | "press_key"
-  | "scroll"
-  | "navigate"
-  | "new_tab"
-  | "close_tab"
-  | "select_option"
-  | "chatgpt_worker_submit"
-  | "read_chatgpt_worker"
-  | "activate_worker_tab"
-  | "reload_worker_tab";
 
 interface NativeRequest {
   type: "request";
@@ -107,6 +89,16 @@ async function listTabs(windowId?: number) {
   return tabs.filter((tab) => !tab.incognito).map(serializeTab);
 }
 
+/** Returns one readable tab and optionally requires the ChatGPT worker origin. */
+async function getValidatedWorkerTab(tabId: number, allowNonWorker = false) {
+  const tab = await chrome.tabs.get(tabId);
+  assertReadableTab(tab);
+  if (!allowNonWorker && new URL(resolveTabUrl(tab)).hostname !== "chatgpt.com") {
+    throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
+  }
+  return tab;
+}
+
 /** Extracts bounded visible page data from one normal readable browser tab. */
 async function readTab(tabId: number, offset: number, maxCharacters: number, includeLinks: boolean) {
   const tab = await chrome.tabs.get(tabId);
@@ -132,12 +124,7 @@ async function readTab(tabId: number, offset: number, maxCharacters: number, inc
 
 /** Runs an internal worker command after ChatGPT navigation is committed and safe to inject into. */
 async function runChatGptWorker(tabId: number, command: ChatGptWorkerCommand) {
-  const tab = await chrome.tabs.get(tabId);
-  assertReadableTab(tab);
-  const url = resolveTabUrl(tab);
-  if (new URL(url).hostname !== "chatgpt.com") {
-    throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
-  }
+  const tab = await getValidatedWorkerTab(tabId);
   if (!tab.url || tab.status === "loading") {
     throw new Error("NAVIGATION_IN_PROGRESS: ChatGPT worker tab is still navigating");
   }
@@ -154,11 +141,7 @@ async function runChatGptWorker(tabId: number, command: ChatGptWorkerCommand) {
 
 /** Activates one ChatGPT worker tab for recovery and returns its current metadata. */
 async function activateWorkerTab(tabId: number, allowNonWorker = false) {
-  const tab = await chrome.tabs.get(tabId);
-  assertReadableTab(tab);
-  if (!allowNonWorker && new URL(resolveTabUrl(tab)).hostname !== "chatgpt.com") {
-    throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
-  }
+  const tab = await getValidatedWorkerTab(tabId, allowNonWorker);
   await chrome.windows.update(tab.windowId, { focused: true });
   const updated = await chrome.tabs.update(tabId, { active: true });
   if (!updated) throw new Error("TAB_NOT_FOUND: Could not activate worker tab");
@@ -167,11 +150,7 @@ async function activateWorkerTab(tabId: number, allowNonWorker = false) {
 
 /** Reloads one finished ChatGPT worker tab for read recovery without submitting anything. */
 async function reloadWorkerTab(tabId: number) {
-  const tab = await chrome.tabs.get(tabId);
-  assertReadableTab(tab);
-  if (new URL(resolveTabUrl(tab)).hostname !== "chatgpt.com") {
-    throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
-  }
+  const tab = await getValidatedWorkerTab(tabId);
   await chrome.tabs.reload(tabId);
   return { tab: serializeTab(await chrome.tabs.get(tabId)) };
 }
