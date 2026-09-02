@@ -61,7 +61,7 @@ Chrome starts the native host when the extension connects. The native host start
 ## Requirements
 
 - macOS
-- Google Chrome 120+
+- Google Chrome 121+
 - Node.js 20+
 - A ChatGPT account with Developer Mode available
 - An OpenAI Platform tunnel ID and runtime API key with Tunnels Read + Use
