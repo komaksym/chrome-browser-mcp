@@ -16,7 +16,8 @@ export type BrowserMethod =
   | "chatgpt_worker_submit"
   | "read_chatgpt_worker"
   | "activate_worker_tab"
-  | "reload_worker_tab";
+  | "reload_worker_tab"
+  | "resolve_agent_anchor";
 
 export interface NativeRequest {
   type: "request";

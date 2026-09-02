@@ -29,6 +29,7 @@ export function createRecoveryBrowser(options: RecoveryBrowserOptions): {
 
   const browser = {
     request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99, windowId: 10 } });
       if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
       if (method === "chatgpt_worker_submit") {
         state.submissions += 1;

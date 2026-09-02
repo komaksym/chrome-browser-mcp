@@ -16,6 +16,48 @@ const RESTRICTED_SCHEMES = ["chrome:", "chrome-extension:", "devtools:", "view-s
 let nativePort: chrome.runtime.Port | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectDelay = 500;
+function isChatGptAnchorCandidate(tab: chrome.tabs.Tab, excluded: Set<number>): tab is chrome.tabs.Tab & { id: number } {
+  if (tab.id === undefined || excluded.has(tab.id) || tab.incognito) return false;
+  const rawUrl = resolveTabUrl(tab);
+  try {
+    const url = new URL(rawUrl);
+    return (url.protocol === "https:" || url.protocol === "http:") && url.hostname === "chatgpt.com";
+  } catch {
+    return false;
+  }
+}
+
+async function resolveAgentAnchor(params: Record<string, unknown>) {
+  const requestedId =
+    typeof params.tabId === "number" && Number.isInteger(params.tabId) ? params.tabId : undefined;
+  const excluded = new Set(
+    Array.isArray(params.excludeTabIds)
+      ? params.excludeTabIds.filter((value): value is number => typeof value === "number" && Number.isInteger(value))
+      : [],
+  );
+
+  if (requestedId !== undefined) {
+    try {
+      const tab = await chrome.tabs.get(requestedId);
+      if (!isChatGptAnchorCandidate(tab, new Set())) throw new Error();
+      return { tab: serializeTab(tab) };
+    } catch {
+      throw new Error("AGENT_ANCHOR_UNAVAILABLE: Parent ChatGPT tab is unavailable");
+    }
+  }
+
+  const tabs = await chrome.tabs.query({ windowType: "normal" });
+  const candidates = tabs
+    .filter((tab) => isChatGptAnchorCandidate(tab, excluded))
+    .sort((left, right) => {
+      const l = left.lastAccessed ?? 0;
+      const r = right.lastAccessed ?? 0;
+      return r - l;
+    });
+  const tab = candidates[0];
+  if (!tab) throw new Error("AGENT_ANCHOR_UNAVAILABLE: No eligible parent ChatGPT tab is available");
+  return { tab: serializeTab(tab) };
+}
 
 const SENSITIVE_QUERY_KEY = /(?:access[_-]?token|token|auth|authorization|api[_-]?key|secret|session|code|sig|signature|jwt|credential|password)/i;
 
@@ -190,6 +232,8 @@ function stringParam(params: Record<string, unknown>, key: string, allowEmpty = 
 /** Routes one validated native request to its browser operation and serializable response. */
 async function execute(method: BrowserMethod, params: Record<string, unknown>): Promise<unknown> {
   switch (method) {
+    case "resolve_agent_anchor":
+      return resolveAgentAnchor(params);
     case "browser_status":
       return {
         connected: true,
@@ -288,7 +332,14 @@ async function execute(method: BrowserMethod, params: Record<string, unknown>): 
       return { tab: serializeTab(updated) };
     }
     case "new_tab": {
-      const tab = await chrome.tabs.create({ url: httpUrlParam(params, "url"), active: params.active !== false });
+      const windowId = typeof params.windowId === "number" && Number.isInteger(params.windowId)
+        ? params.windowId
+        : undefined;
+      const tab = await chrome.tabs.create({
+        url: httpUrlParam(params, "url"),
+        active: params.active !== false,
+        ...(windowId === undefined ? {} : { windowId }),
+      });
       if (tab.incognito) throw new Error("INCOGNITO_DISABLED: Incognito tabs are excluded");
       return { tab: serializeTab(tab) };
     }
