@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AgentRuntime } from "../../src/bridge/agentRuntime.js";
 import { BrowserError, type BrowserClient } from "../../src/bridge/browserClient.js";
+import { withAgentAnchor } from "../agentBrowserFixture.js";
 import { createRecoveryBrowser } from "./recoveryBrowserFixture.js";
 
 interface Deferred<Value> {
@@ -31,8 +32,7 @@ describe("AgentRuntime", () => {
  const secondTabOpening = deferred<void>();
  let tabOpenCalls = 0;
  const browser = {
- request: (method: string, args: Record<string, unknown> = {}) => {
-if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99, windowId: 10 } });
+ request: withAgentAnchor((method: string, args: Record<string, unknown> = {}) => {
  if (method === "open_agent_worker_tab") {
  tabOpenCalls += 1;
  if (tabOpenCalls === 1) return Promise.resolve({ tab: { tabId: 1 } });
@@ -68,7 +68,7 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
  }
  if (method === "close_tab") return Promise.resolve({ closed: true });
  return Promise.resolve({});
- },
+ }),
  } as BrowserClient;
  const runtime = new AgentRuntime(browser);
  const spawned = await runtime.spawnAgents(
@@ -103,8 +103,7 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
  }>();
  let submittedPrompt = "";
  const browser = {
- request: (method: string, args: Record<string, unknown> = {}) => {
-if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99, windowId: 10 } });
+ request: withAgentAnchor((method: string, args: Record<string, unknown> = {}) => {
  if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
  if (method === "chatgpt_worker_submit") {
  submittedPrompt = args.prompt as string;
@@ -116,7 +115,7 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
  }
  if (method === "close_tab") return Promise.resolve({ closed: true });
  return Promise.resolve({});
- },
+ }),
  } as BrowserClient;
  const runtime = new AgentRuntime(browser);
  const spawned = await runtime.spawnAgents([{ agent_id: "cancel-me", prompt: "wait" }], 1);
@@ -140,8 +139,7 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
  it("marks verified worker output untrusted and caps it before returning it", async () => {
  let submittedPrompt = "";
  const browser = {
- request: (method: string, args: Record<string, unknown> = {}) => {
-if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99, windowId: 10 } });
+ request: withAgentAnchor((method: string, args: Record<string, unknown> = {}) => {
  if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
  if (method === "chatgpt_worker_submit") {
  submittedPrompt = args.prompt as string;
@@ -158,7 +156,7 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
  }
  if (method === "close_tab") return Promise.resolve({ closed: true });
  return Promise.resolve({});
- },
+ }),
  } as BrowserClient;
  const runtime = new AgentRuntime(browser);
  const spawned = await runtime.spawnAgents([{ agent_id: "untrusted", prompt: "answer" }], 1);
@@ -179,8 +177,7 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
  let submittedPrompt = "";
  const closeCalls: number[] = [];
  const browser = {
- request: (method: string, args: Record<string, unknown> = {}) => {
-if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99, windowId: 10 } });
+ request: withAgentAnchor((method: string, args: Record<string, unknown> = {}) => {
  if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
  if (method === "chatgpt_worker_submit") {
  submittedPrompt = args.prompt as string;
@@ -200,7 +197,7 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
  return Promise.resolve({ closed: true });
  }
  return Promise.resolve({});
- },
+ }),
  } as BrowserClient;
  const runtime = new AgentRuntime(browser);
  const spawned = await runtime.spawnAgents([{ agent_id: "complete", prompt: "finish" }], 1);
@@ -215,10 +212,8 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
 
  it("keeps typed browser transport timeouts retryable", async () => {
  const browser = {
- request: (method: string) =>
-      method === "resolve_agent_anchor"
-        ? Promise.resolve({ tab: { tabId: 99, windowId: 10 } })
-        : Promise.reject(new BrowserError("TIMEOUT", "browser request timed out")),
+ request: withAgentAnchor(() =>
+      Promise.reject(new BrowserError("TIMEOUT", "browser request timed out"))),
  } as unknown as BrowserClient;
  const runtime = new AgentRuntime(browser);
 
@@ -483,10 +478,7 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
     const anchorIds: number[] = [];
     const submitted = new Map<number, string>();
     const browser = {
-      request: (method: string, args: Record<string, unknown> = {}) => {
-        if (method === "resolve_agent_anchor") {
-          return Promise.resolve({ tab: { tabId: 42, windowId: 1 } });
-        }
+      request: withAgentAnchor((method: string, args: Record<string, unknown> = {}) => {
         if (method === "open_agent_worker_tab") {
           anchorIds.push(args.anchorTabId as number);
           return Promise.resolve({ tab: { tabId: anchorIds.length } });
@@ -503,7 +495,7 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
             : { ready: true, generating: true, latestUserText: prompt, latestAssistantText: null });
         }
         return Promise.resolve({});
-      },
+      }, { tabId: 42, windowId: 1 }),
     } as BrowserClient;
     const runtime = new AgentRuntime(browser);
     const spawned = await runtime.spawnAgents([{ agent_id: "one", prompt: "one" }, { agent_id: "two", prompt: "two" }], 1);
@@ -515,10 +507,7 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
     let opened = 0;
     let submittedPrompt = "";
     const browser = {
-      request: (method: string, args: Record<string, unknown> = {}) => {
-        if (method === "resolve_agent_anchor") {
-          return Promise.resolve({ tab: { tabId: 42, windowId: 1 } });
-        }
+      request: withAgentAnchor((method: string, args: Record<string, unknown> = {}) => {
         if (method === "open_agent_worker_tab") {
           opened += 1;
           if (opened > 1) {
@@ -537,7 +526,7 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
         });
         if (method === "close_tab") return Promise.resolve({ closed: true });
         return Promise.resolve({});
-      },
+      }, { tabId: 42, windowId: 1 }),
     } as BrowserClient;
     const runtime = new AgentRuntime(browser);
     const spawned = await runtime.spawnAgents([{ agent_id: "one", prompt: "one" }, { agent_id: "two", prompt: "two" }], 1);
