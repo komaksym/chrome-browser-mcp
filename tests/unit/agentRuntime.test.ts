@@ -166,7 +166,7 @@ describe("AgentRuntime", () => {
  let tabOpenCalls = 0;
  const browser = {
  request: (method: string, args: Record<string, unknown> = {}) => {
-      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
  if (method === "open_agent_worker_tab") {
  tabOpenCalls += 1;
  if (tabOpenCalls === 1) return Promise.resolve({ tab: { tabId: 1 } });
@@ -238,7 +238,7 @@ describe("AgentRuntime", () => {
  let submittedPrompt = "";
  const browser = {
  request: (method: string, args: Record<string, unknown> = {}) => {
-      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
  if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
  if (method === "chatgpt_worker_submit") {
  submittedPrompt = args.prompt as string;
@@ -275,7 +275,7 @@ describe("AgentRuntime", () => {
  let submittedPrompt = "";
  const browser = {
  request: (method: string, args: Record<string, unknown> = {}) => {
-      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
  if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
  if (method === "chatgpt_worker_submit") {
  submittedPrompt = args.prompt as string;
@@ -314,7 +314,7 @@ describe("AgentRuntime", () => {
  const closeCalls: number[] = [];
  const browser = {
  request: (method: string, args: Record<string, unknown> = {}) => {
-      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
  if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
  if (method === "chatgpt_worker_submit") {
  submittedPrompt = args.prompt as string;
@@ -551,6 +551,85 @@ describe("AgentRuntime", () => {
  });
  });
 
+ it("accepts a rendered worker user turn when its unique protocol marker still matches", async () => {
+ let submittedPrompt = "";
+ const browser = {
+ request: (method: string, args: Record<string, unknown> = {}) => {
+ if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
+ if (method === "chatgpt_worker_submit") {
+ submittedPrompt = args.prompt as string;
+ return Promise.resolve({ submitted: true });
+ }
+ if (method === "read_chatgpt_worker") {
+ const marker = completionMarker(submittedPrompt);
+ return Promise.resolve({
+ ready: true,
+ generating: false,
+ latestUserText: `Rendered worker turn\n${marker}`,
+ latestUserTruncated: false,
+ latestAssistantText: `Rendered result\n${marker}`,
+ latestAssistantTruncated: false,
+ });
+ }
+ if (method === "close_tab") return Promise.resolve({ closed: true });
+ return Promise.resolve({});
+ },
+ } as unknown as BrowserClient;
+ const runtime = new AgentRuntime(browser);
+ const spawned = await runtime.spawnAgents([{ agent_id: "rendered", prompt: "answer once" }], 1);
+
+ const collected = await runtime.collectAgents(spawned.run_id);
+
+ expect(collected).toMatchObject({
+ state: "COMPLETE",
+ barrier: { satisfied: true },
+ results: [{ agent_id: "rendered", result: { type: "text", text: "Rendered result" } }],
+ failed: [],
+ pending: [],
+ });
+ });
+
+ it("recognizes a rendered submitted turn after a lost acknowledgement without submitting twice", async () => {
+ let submittedPrompt = "";
+ let submissionCalls = 0;
+ const browser = {
+ request: (method: string, args: Record<string, unknown> = {}) => {
+ if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
+ if (method === "chatgpt_worker_submit") {
+ submissionCalls += 1;
+ submittedPrompt = args.prompt as string;
+ if (submissionCalls === 1) {
+ return Promise.reject(new BrowserError("TIMEOUT", "worker submit acknowledgement was lost"));
+ }
+ return Promise.resolve({ submitted: true });
+ }
+ if (method === "read_chatgpt_worker") {
+ const marker = completionMarker(submittedPrompt);
+ return Promise.resolve({
+ ready: true,
+ generating: true,
+ latestUserText: `Rendered worker turn\n${marker}`,
+ latestUserTruncated: false,
+ latestAssistantText: null,
+ latestAssistantTruncated: false,
+ });
+ }
+ return Promise.resolve({});
+ },
+ } as unknown as BrowserClient;
+ const runtime = new AgentRuntime(browser);
+
+ const spawned = await runtime.spawnAgents([{ agent_id: "lost-ack", prompt: "answer once" }], 1);
+
+ expect(spawned).toMatchObject({
+ state: "RUNNING",
+ jobs: [{ agent_id: "lost-ack", state: "DISPATCHED" }],
+ });
+ expect(submissionCalls).toBe(1);
+ });
+
  it("does not mask worker identity mismatch as recovery exhaustion", async () => {
  const { browser, state } = createRecoveryBrowser({
  read: (current) => Promise.resolve({
@@ -613,272 +692,272 @@ describe("AgentRuntime", () => {
  });
  });
 
-  it("dispatches queued workers through the stored anchor identity", async () => {
-    const openedAnchors: number[] = [];
-    const submitted = new Map<number, string>();
-    let nextTabId = 101;
-    const browser = {
-      request: (method: string, args: Record<string, unknown> = {}) => {
-        if (method === "resolve_chatgpt_anchor") {
-          return Promise.resolve({ tab: { tabId: 55, windowId: 3 } });
-        }
-        if (method === "open_agent_worker_tab") {
-          openedAnchors.push(args.anchorTabId as number);
-          return Promise.resolve({ tab: { tabId: nextTabId++ } });
-        }
-        if (method === "chatgpt_worker_submit") {
-          submitted.set(args.tabId as number, args.prompt as string);
-          return Promise.resolve({ submitted: true });
-        }
-        if (method === "read_chatgpt_worker") {
-          const prompt = submitted.get(args.tabId as number);
-          if (!prompt) throw new Error("missing prompt");
-          return Promise.resolve({
-            ready: true,
-            generating: false,
-            latestUserText: prompt,
-            latestAssistantText: `Done\n${completionMarker(prompt)}`,
-          });
-        }
-        if (method === "close_tab") return Promise.resolve({ closed: true });
-        return Promise.resolve({});
-      },
-    } as unknown as BrowserClient;
-    const runtime = new AgentRuntime(browser);
+ it("dispatches queued workers through the stored anchor identity", async () => {
+ const openedAnchors: number[] = [];
+ const submitted = new Map<number, string>();
+ let nextTabId = 101;
+ const browser = {
+ request: (method: string, args: Record<string, unknown> = {}) => {
+ if (method === "resolve_chatgpt_anchor") {
+ return Promise.resolve({ tab: { tabId: 55, windowId: 3 } });
+ }
+ if (method === "open_agent_worker_tab") {
+ openedAnchors.push(args.anchorTabId as number);
+ return Promise.resolve({ tab: { tabId: nextTabId++ } });
+ }
+ if (method === "chatgpt_worker_submit") {
+ submitted.set(args.tabId as number, args.prompt as string);
+ return Promise.resolve({ submitted: true });
+ }
+ if (method === "read_chatgpt_worker") {
+ const prompt = submitted.get(args.tabId as number);
+ if (!prompt) throw new Error("missing prompt");
+ return Promise.resolve({
+ ready: true,
+ generating: false,
+ latestUserText: prompt,
+ latestAssistantText: `Done\n${completionMarker(prompt)}`,
+ });
+ }
+ if (method === "close_tab") return Promise.resolve({ closed: true });
+ return Promise.resolve({});
+ },
+ } as unknown as BrowserClient;
+ const runtime = new AgentRuntime(browser);
 
-    const spawned = await runtime.spawnAgents(
-      [
-        { agent_id: "first", prompt: "first" },
-        { agent_id: "second", prompt: "second" },
-      ],
-      1,
-    );
-    expect(openedAnchors).toEqual([55]);
+ const spawned = await runtime.spawnAgents(
+ [
+ { agent_id: "first", prompt: "first" },
+ { agent_id: "second", prompt: "second" },
+ ],
+ 1,
+ );
+ expect(openedAnchors).toEqual([55]);
 
-    await runtime.collectAgents(spawned.run_id);
-    expect(openedAnchors).toEqual([55, 55]);
-  });
+ await runtime.collectAgents(spawned.run_id);
+ expect(openedAnchors).toEqual([55, 55]);
+ });
 
-  it("fails queued work with ANCHOR_UNAVAILABLE instead of opening in an arbitrary window", async () => {
-    let anchorAvailable = true;
-    let openedTabs = 0;
-    const submitted = new Map<number, string>();
-    const browser = {
-      request: (method: string, args: Record<string, unknown> = {}) => {
-        if (method === "resolve_chatgpt_anchor") {
-          return Promise.resolve({ tab: { tabId: 55, windowId: 3 } });
-        }
-        if (method === "open_agent_worker_tab") {
-          if (!anchorAvailable) {
-            return Promise.reject(new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer available"));
-          }
-          openedTabs += 1;
-          return Promise.resolve({ tab: { tabId: openedTabs } });
-        }
-        if (method === "chatgpt_worker_submit") {
-          submitted.set(args.tabId as number, args.prompt as string);
-          return Promise.resolve({ submitted: true });
-        }
-        if (method === "read_chatgpt_worker") {
-          const prompt = submitted.get(args.tabId as number);
-          if (!prompt) throw new Error("missing prompt");
-          return Promise.resolve({
-            ready: true,
-            generating: false,
-            latestUserText: prompt,
-            latestAssistantText: `Done\n${completionMarker(prompt)}`,
-          });
-        }
-        if (method === "close_tab") return Promise.resolve({ closed: true });
-        return Promise.resolve({});
-      },
-    } as unknown as BrowserClient;
-    const runtime = new AgentRuntime(browser);
+ it("fails queued work with ANCHOR_UNAVAILABLE instead of opening in an arbitrary window", async () => {
+ let anchorAvailable = true;
+ let openedTabs = 0;
+ const submitted = new Map<number, string>();
+ const browser = {
+ request: (method: string, args: Record<string, unknown> = {}) => {
+ if (method === "resolve_chatgpt_anchor") {
+ return Promise.resolve({ tab: { tabId: 55, windowId: 3 } });
+ }
+ if (method === "open_agent_worker_tab") {
+ if (!anchorAvailable) {
+ return Promise.reject(new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer available"));
+ }
+ openedTabs += 1;
+ return Promise.resolve({ tab: { tabId: openedTabs } });
+ }
+ if (method === "chatgpt_worker_submit") {
+ submitted.set(args.tabId as number, args.prompt as string);
+ return Promise.resolve({ submitted: true });
+ }
+ if (method === "read_chatgpt_worker") {
+ const prompt = submitted.get(args.tabId as number);
+ if (!prompt) throw new Error("missing prompt");
+ return Promise.resolve({
+ ready: true,
+ generating: false,
+ latestUserText: prompt,
+ latestAssistantText: `Done\n${completionMarker(prompt)}`,
+ });
+ }
+ if (method === "close_tab") return Promise.resolve({ closed: true });
+ return Promise.resolve({});
+ },
+ } as unknown as BrowserClient;
+ const runtime = new AgentRuntime(browser);
 
-    const spawned = await runtime.spawnAgents(
-      [
-        { agent_id: "first", prompt: "first" },
-        { agent_id: "second", prompt: "second" },
-      ],
-      1,
-    );
-    anchorAvailable = false;
-    const collected = await runtime.collectAgents(spawned.run_id);
-    const [failed] = collected.failed;
+ const spawned = await runtime.spawnAgents(
+ [
+ { agent_id: "first", prompt: "first" },
+ { agent_id: "second", prompt: "second" },
+ ],
+ 1,
+ );
+ anchorAvailable = false;
+ const collected = await runtime.collectAgents(spawned.run_id);
+ const [failed] = collected.failed;
 
-    expect(openedTabs).toBe(1);
-    expect(failed?.agent_id).toBe("second");
-    expect(failed?.state).toBe("FAILED_TERMINAL");
-    expect(failed?.error?.code).toBe("ANCHOR_UNAVAILABLE");
-    expect(failed?.error?.retryable).toBe(false);
-  });
+ expect(openedTabs).toBe(1);
+ expect(failed?.agent_id).toBe("second");
+ expect(failed?.state).toBe("FAILED_TERMINAL");
+ expect(failed?.error?.code).toBe("ANCHOR_UNAVAILABLE");
+ expect(failed?.error?.retryable).toBe(false);
+ });
 
-  it("excludes runtime-owned worker tabs when resolving the anchor for a new run", async () => {
-    const anchorRequests: Record<string, unknown>[] = [];
-    let nextTabId = 20;
-    const browser = {
-      request: (method: string, args: Record<string, unknown> = {}) => {
-        if (method === "resolve_chatgpt_anchor") {
-          anchorRequests.push(args);
-          return Promise.resolve({ tab: { tabId: 7, windowId: 2 } });
-        }
-        if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: nextTabId++ } });
-        if (method === "chatgpt_worker_submit") return Promise.resolve({ submitted: true });
-        return Promise.resolve({});
-      },
-    } as BrowserClient;
-    const runtime = new AgentRuntime(browser);
+ it("excludes runtime-owned worker tabs when resolving the anchor for a new run", async () => {
+ const anchorRequests: Record<string, unknown>[] = [];
+ let nextTabId = 20;
+ const browser = {
+ request: (method: string, args: Record<string, unknown> = {}) => {
+ if (method === "resolve_chatgpt_anchor") {
+ anchorRequests.push(args);
+ return Promise.resolve({ tab: { tabId: 7, windowId: 2 } });
+ }
+ if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: nextTabId++ } });
+ if (method === "chatgpt_worker_submit") return Promise.resolve({ submitted: true });
+ return Promise.resolve({});
+ },
+ } as BrowserClient;
+ const runtime = new AgentRuntime(browser);
 
-    await runtime.spawnAgents([{ agent_id: "first", prompt: "first" }], 1);
-    await runtime.spawnAgents([{ agent_id: "second", prompt: "second" }], 1);
+ await runtime.spawnAgents([{ agent_id: "first", prompt: "first" }], 1);
+ await runtime.spawnAgents([{ agent_id: "second", prompt: "second" }], 1);
 
-    expect(anchorRequests[0]).toEqual({ excludedTabIds: [] });
-    expect(anchorRequests[1]).toEqual({ excludedTabIds: [20] });
-  });
+ expect(anchorRequests[0]).toEqual({ excludedTabIds: [] });
+ expect(anchorRequests[1]).toEqual({ excludedTabIds: [20] });
+ });
 
-  it("completes from a fresh streamed snapshot without rereading the virtualized DOM", async () => {
-    let submittedPrompt = "";
-    let directReads = 0;
-    let snapshot: Record<string, unknown> | undefined;
-    const browser = {
-      request: (method: string, args: Record<string, unknown> = {}) => {
-        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
-        if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 801 } });
-        if (method === "chatgpt_worker_submit") {
-          submittedPrompt = args.prompt as string;
-          snapshot = {
-            ready: true,
-            generating: false,
-            latestUserText: submittedPrompt,
-            latestUserTruncated: false,
-            latestAssistantText: `Snapshot answer\n${completionMarker(submittedPrompt)}`,
-            latestAssistantTruncated: false,
-            revision: 2,
-            timestamp: Date.now() + 10,
-          };
-          return Promise.resolve({ submitted: true, snapshot: { revision: 1, timestamp: Date.now() } });
-        }
-        if (method === "read_chatgpt_worker") {
-          directReads += 1;
-          return Promise.reject(new Error("EXTRACTION_FAILED: assistant node was virtualized"));
-        }
-        if (method === "close_tab") return Promise.resolve({ closed: true });
-        return Promise.resolve({});
-      },
-      latestChatGptWorkerSnapshot: () => snapshot,
-      forgetChatGptWorkerSnapshot: () => undefined,
-    } as unknown as BrowserClient;
-    const runtime = new AgentRuntime(browser);
-    const spawned = await runtime.spawnAgents([{ agent_id: "snapshot", prompt: "answer once" }], 1);
+ it("completes from a fresh streamed snapshot without rereading the virtualized DOM", async () => {
+ let submittedPrompt = "";
+ let directReads = 0;
+ let snapshot: Record<string, unknown> | undefined;
+ const browser = {
+ request: (method: string, args: Record<string, unknown> = {}) => {
+ if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 801 } });
+ if (method === "chatgpt_worker_submit") {
+ submittedPrompt = args.prompt as string;
+ snapshot = {
+ ready: true,
+ generating: false,
+ latestUserText: submittedPrompt,
+ latestUserTruncated: false,
+ latestAssistantText: `Snapshot answer\n${completionMarker(submittedPrompt)}`,
+ latestAssistantTruncated: false,
+ revision: 2,
+ timestamp: Date.now() + 10,
+ };
+ return Promise.resolve({ submitted: true, snapshot: { revision: 1, timestamp: Date.now() } });
+ }
+ if (method === "read_chatgpt_worker") {
+ directReads += 1;
+ return Promise.reject(new Error("EXTRACTION_FAILED: assistant node was virtualized"));
+ }
+ if (method === "close_tab") return Promise.resolve({ closed: true });
+ return Promise.resolve({});
+ },
+ latestChatGptWorkerSnapshot: () => snapshot,
+ forgetChatGptWorkerSnapshot: () => undefined,
+ } as unknown as BrowserClient;
+ const runtime = new AgentRuntime(browser);
+ const spawned = await runtime.spawnAgents([{ agent_id: "snapshot", prompt: "answer once" }], 1);
 
-    const collected = await runtime.collectAgents(spawned.run_id);
+ const collected = await runtime.collectAgents(spawned.run_id);
 
-    expect(directReads).toBe(0);
-    expect(collected).toMatchObject({
-      state: "COMPLETE",
-      results: [{ agent_id: "snapshot", result: { type: "text", text: "Snapshot answer", truncated: false } }],
-    });
-  });
+ expect(directReads).toBe(0);
+ expect(collected).toMatchObject({
+ state: "COMPLETE",
+ results: [{ agent_id: "snapshot", result: { type: "text", text: "Snapshot answer", truncated: false } }],
+ });
+ });
 
-  it("rejects stale or mismatched snapshots before falling back to a direct read", async () => {
-    let submittedPrompt = "";
-    let directReads = 0;
-    let snapshot: Record<string, unknown> | undefined;
-    const browser = {
-      request: (method: string, args: Record<string, unknown> = {}) => {
-        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
-        if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 802 } });
-        if (method === "chatgpt_worker_submit") {
-          submittedPrompt = args.prompt as string;
-          snapshot = {
-            ready: true,
-            generating: false,
-            latestUserText: "different worker turn",
-            latestUserTruncated: false,
-            latestAssistantText: `Wrong answer\n${completionMarker(submittedPrompt)}`,
-            latestAssistantTruncated: false,
-            revision: 2,
-            timestamp: Date.now() + 10,
-          };
-          return Promise.resolve({ submitted: true, snapshot: { revision: 2, timestamp: Date.now() } });
-        }
-        if (method === "read_chatgpt_worker_snapshot") {
-          return Promise.resolve({ snapshot: snapshot ? { ...snapshot, revision: 3 } : undefined });
-        }
-        if (method === "read_chatgpt_worker") {
-          directReads += 1;
-          return Promise.resolve({
-            ready: true,
-            generating: false,
-            latestUserText: submittedPrompt,
-            latestAssistantText: `Direct answer\n${completionMarker(submittedPrompt)}`,
-          });
-        }
-        if (method === "close_tab") return Promise.resolve({ closed: true });
-        return Promise.resolve({});
-      },
-      latestChatGptWorkerSnapshot: () => snapshot,
-      forgetChatGptWorkerSnapshot: () => undefined,
-    } as unknown as BrowserClient;
-    const runtime = new AgentRuntime(browser);
-    const spawned = await runtime.spawnAgents([{ agent_id: "identity", prompt: "answer once" }], 1);
+ it("rejects stale or mismatched snapshots before falling back to a direct read", async () => {
+ let submittedPrompt = "";
+ let directReads = 0;
+ let snapshot: Record<string, unknown> | undefined;
+ const browser = {
+ request: (method: string, args: Record<string, unknown> = {}) => {
+ if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 802 } });
+ if (method === "chatgpt_worker_submit") {
+ submittedPrompt = args.prompt as string;
+ snapshot = {
+ ready: true,
+ generating: false,
+ latestUserText: "different worker turn",
+ latestUserTruncated: false,
+ latestAssistantText: `Wrong answer\n${completionMarker(submittedPrompt)}`,
+ latestAssistantTruncated: false,
+ revision: 2,
+ timestamp: Date.now() + 10,
+ };
+ return Promise.resolve({ submitted: true, snapshot: { revision: 2, timestamp: Date.now() } });
+ }
+ if (method === "read_chatgpt_worker_snapshot") {
+ return Promise.resolve({ snapshot: snapshot ? { ...snapshot, revision: 3 } : undefined });
+ }
+ if (method === "read_chatgpt_worker") {
+ directReads += 1;
+ return Promise.resolve({
+ ready: true,
+ generating: false,
+ latestUserText: submittedPrompt,
+ latestAssistantText: `Direct answer\n${completionMarker(submittedPrompt)}`,
+ });
+ }
+ if (method === "close_tab") return Promise.resolve({ closed: true });
+ return Promise.resolve({});
+ },
+ latestChatGptWorkerSnapshot: () => snapshot,
+ forgetChatGptWorkerSnapshot: () => undefined,
+ } as unknown as BrowserClient;
+ const runtime = new AgentRuntime(browser);
+ const spawned = await runtime.spawnAgents([{ agent_id: "identity", prompt: "answer once" }], 1);
 
-    const collected = await runtime.collectAgents(spawned.run_id);
+ const collected = await runtime.collectAgents(spawned.run_id);
 
-    expect(directReads).toBe(1);
-    expect(collected).toMatchObject({
-      state: "COMPLETE",
-      results: [{ agent_id: "identity", result: { type: "text", text: "Direct answer" } }],
-    });
-  });
+ expect(directReads).toBe(1);
+ expect(collected).toMatchObject({
+ state: "COMPLETE",
+ results: [{ agent_id: "identity", result: { type: "text", text: "Direct answer" } }],
+ });
+ });
 
-  it("does not leave a job pending for a fresh snapshot from another turn", async () => {
-    let submittedPrompt = "";
-    let directReads = 0;
-    let snapshot: Record<string, unknown> | undefined;
-    const browser = {
-      request: (method: string, args: Record<string, unknown> = {}) => {
-        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
-        if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 803 } });
-        if (method === "chatgpt_worker_submit") {
-          submittedPrompt = args.prompt as string;
-          snapshot = {
-            ready: true,
-            generating: true,
-            latestUserText: "another worker turn",
-            latestUserTruncated: false,
-            latestAssistantText: null,
-            latestAssistantTruncated: false,
-            revision: 2,
-            timestamp: Date.now() + 10,
-          };
-          return Promise.resolve({ submitted: true, snapshot: { revision: 1, timestamp: Date.now() } });
-        }
-        if (method === "read_chatgpt_worker") {
-          directReads += 1;
-          return Promise.resolve({
-            ready: true,
-            generating: false,
-            latestUserText: submittedPrompt,
-            latestAssistantText: `Direct answer\n${completionMarker(submittedPrompt)}`,
-          });
-        }
-        if (method === "close_tab") return Promise.resolve({ closed: true });
-        return Promise.resolve({});
-      },
-      latestChatGptWorkerSnapshot: () => snapshot,
-      forgetChatGptWorkerSnapshot: () => undefined,
-    } as unknown as BrowserClient;
-    const runtime = new AgentRuntime(browser);
-    const spawned = await runtime.spawnAgents([{ agent_id: "partial-identity", prompt: "answer once" }], 1);
+ it("does not leave a job pending for a fresh snapshot from another turn", async () => {
+ let submittedPrompt = "";
+ let directReads = 0;
+ let snapshot: Record<string, unknown> | undefined;
+ const browser = {
+ request: (method: string, args: Record<string, unknown> = {}) => {
+ if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 803 } });
+ if (method === "chatgpt_worker_submit") {
+ submittedPrompt = args.prompt as string;
+ snapshot = {
+ ready: true,
+ generating: true,
+ latestUserText: "another worker turn",
+ latestUserTruncated: false,
+ latestAssistantText: null,
+ latestAssistantTruncated: false,
+ revision: 2,
+ timestamp: Date.now() + 10,
+ };
+ return Promise.resolve({ submitted: true, snapshot: { revision: 1, timestamp: Date.now() } });
+ }
+ if (method === "read_chatgpt_worker") {
+ directReads += 1;
+ return Promise.resolve({
+ ready: true,
+ generating: false,
+ latestUserText: submittedPrompt,
+ latestAssistantText: `Direct answer\n${completionMarker(submittedPrompt)}`,
+ });
+ }
+ if (method === "close_tab") return Promise.resolve({ closed: true });
+ return Promise.resolve({});
+ },
+ latestChatGptWorkerSnapshot: () => snapshot,
+ forgetChatGptWorkerSnapshot: () => undefined,
+ } as unknown as BrowserClient;
+ const runtime = new AgentRuntime(browser);
+ const spawned = await runtime.spawnAgents([{ agent_id: "partial-identity", prompt: "answer once" }], 1);
 
-    const collected = await runtime.collectAgents(spawned.run_id);
+ const collected = await runtime.collectAgents(spawned.run_id);
 
-    expect(directReads).toBe(1);
-    expect(collected).toMatchObject({
-      state: "COMPLETE",
-      results: [{ agent_id: "partial-identity", result: { type: "text", text: "Direct answer" } }],
-    });
-  });
+ expect(directReads).toBe(1);
+ expect(collected).toMatchObject({
+ state: "COMPLETE",
+ results: [{ agent_id: "partial-identity", result: { type: "text", text: "Direct answer" } }],
+ });
+ });
 
 });
