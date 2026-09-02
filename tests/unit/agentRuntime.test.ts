@@ -25,6 +25,140 @@ function completionMarker(prompt: string): string {
 }
 
 describe("AgentRuntime", () => {
+ it("deduplicates concurrent spawn requests with the same request identity", async () => {
+ const anchorReady = deferred<{ tab: { tabId: number; windowId: number } }>();
+ let initialAnchorCalls = 0;
+ let anchoredCalls = 0;
+ let tabOpenCalls = 0;
+ let submissionCalls = 0;
+ const browser = {
+ request: (method: string, args: Record<string, unknown> = {}) => {
+ if (method === "resolve_chatgpt_anchor") {
+ if ("excludedTabIds" in args) {
+ initialAnchorCalls += 1;
+ return anchorReady.promise;
+ }
+ anchoredCalls += 1;
+ return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ }
+ if (method === "new_tab") {
+ tabOpenCalls += 1;
+ return Promise.resolve({ tab: { tabId: 100 + tabOpenCalls } });
+ }
+ if (method === "chatgpt_worker_submit") {
+ submissionCalls += 1;
+ return Promise.resolve({ submitted: true });
+ }
+ return Promise.resolve({});
+ },
+ } as BrowserClient;
+ const runtime = new AgentRuntime(browser);
+ const tasks = [{ agent_id: "same", prompt: "do this once" }];
+
+ const first = runtime.spawnAgents(tasks, 1, "request-1");
+ const second = runtime.spawnAgents(tasks, 1, "request-1");
+ await Promise.resolve();
+ expect(initialAnchorCalls).toBe(1);
+
+ anchorReady.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ const [firstResult, secondResult] = await Promise.all([first, second]);
+
+ expect(secondResult).toEqual(firstResult);
+ expect(anchoredCalls).toBe(1);
+ expect(tabOpenCalls).toBe(1);
+ expect(submissionCalls).toBe(1);
+ });
+
+ it("rejects conflicting reuse of a request identity without starting another run", async () => {
+ let tabOpenCalls = 0;
+ let submissionCalls = 0;
+ const browser = {
+ request: (method: string) => {
+ if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ if (method === "new_tab") {
+ tabOpenCalls += 1;
+ return Promise.resolve({ tab: { tabId: 100 + tabOpenCalls } });
+ }
+ if (method === "chatgpt_worker_submit") {
+ submissionCalls += 1;
+ return Promise.resolve({ submitted: true });
+ }
+ return Promise.resolve({});
+ },
+ } as BrowserClient;
+ const runtime = new AgentRuntime(browser);
+
+ await runtime.spawnAgents([{ agent_id: "same", prompt: "original" }], 1, "request-1");
+ await expect(runtime.spawnAgents([{ agent_id: "same", prompt: "changed" }], 1, "request-1"))
+ .rejects.toThrow("IDEMPOTENCY_CONFLICT");
+
+ expect(tabOpenCalls).toBe(1);
+ expect(submissionCalls).toBe(1);
+ });
+
+ it("keeps logical jobs queued when the global active-worker ceiling is full", async () => {
+ const submitted = new Map<number, string>();
+ const activeTabs = new Set<number>();
+ let maxActiveTabs = 0;
+ let nextTabId = 1;
+ const browser = {
+ request: (method: string, args: Record<string, unknown> = {}) => {
+ if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ if (method === "new_tab") return Promise.resolve({ tab: { tabId: nextTabId++ } });
+ if (method === "chatgpt_worker_submit") {
+ const tabId = args.tabId as number;
+ submitted.set(tabId, args.prompt as string);
+ activeTabs.add(tabId);
+ maxActiveTabs = Math.max(maxActiveTabs, activeTabs.size);
+ return Promise.resolve({ submitted: true });
+ }
+ if (method === "read_chatgpt_worker") {
+ const tabId = args.tabId as number;
+ const prompt = submitted.get(tabId);
+ if (!prompt) throw new Error(`No prompt submitted for tab ${tabId}`);
+ activeTabs.delete(tabId);
+ return Promise.resolve({
+ ready: true,
+ generating: false,
+ latestUserText: prompt,
+ latestAssistantText: `Done\n${completionMarker(prompt)}`,
+ });
+ }
+ return Promise.resolve({});
+ },
+ } as BrowserClient;
+ const runtime = new AgentRuntime(browser);
+
+ const first = await runtime.spawnAgents(
+ [
+ { agent_id: "first-a", prompt: "first a" },
+ { agent_id: "first-b", prompt: "first b" },
+ ],
+ 2,
+ "run-1",
+ );
+ const second = await runtime.spawnAgents(
+ [
+ { agent_id: "second-a", prompt: "second a" },
+ { agent_id: "second-b", prompt: "second b" },
+ ],
+ 2,
+ "run-2",
+ );
+
+ expect(first.jobs).toHaveLength(2);
+ expect(first.jobs.every((job) => job.state === "DISPATCHED")).toBe(true);
+ expect(second.jobs.every((job) => job.state === "CREATED")).toBe(true);
+ expect(maxActiveTabs).toBe(2);
+
+ const firstCollected = await runtime.collectAgents(first.run_id);
+ expect(firstCollected.state).toBe("COMPLETE");
+ expect(maxActiveTabs).toBe(2);
+
+ const secondCollected = await runtime.collectAgents(second.run_id);
+ expect(secondCollected.state).toBe("COMPLETE");
+ });
+
  it("serializes overlapping collections so one queued job is never dispatched twice", async () => {
  const submitted = new Map<number, string>();
  const queuedTabOpens: Array<Deferred<{ tab: { tabId: number } }>> = [];
@@ -215,7 +349,10 @@ describe("AgentRuntime", () => {
 
  it("keeps typed browser transport timeouts retryable", async () => {
  const browser = {
- request: () => Promise.reject(new BrowserError("TIMEOUT", "browser request timed out")),
+ request: (method: string) => {
+ if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+ return Promise.reject(new BrowserError("TIMEOUT", "browser request timed out"));
+ },
  } as unknown as BrowserClient;
  const runtime = new AgentRuntime(browser);
 
@@ -507,7 +644,7 @@ describe("AgentRuntime", () => {
         if (method === "close_tab") return Promise.resolve({ closed: true });
         return Promise.resolve({});
       },
-    } as BrowserClient;
+    } as unknown as BrowserClient;
     const runtime = new AgentRuntime(browser);
 
     const spawned = await runtime.spawnAgents(
@@ -557,7 +694,7 @@ describe("AgentRuntime", () => {
         if (method === "close_tab") return Promise.resolve({ closed: true });
         return Promise.resolve({});
       },
-    } as BrowserClient;
+    } as unknown as BrowserClient;
     const runtime = new AgentRuntime(browser);
 
     const spawned = await runtime.spawnAgents(
@@ -569,15 +706,13 @@ describe("AgentRuntime", () => {
     );
     anchorAvailable = false;
     const collected = await runtime.collectAgents(spawned.run_id);
+    const [failed] = collected.failed;
 
     expect(openedTabs).toBe(1);
-    expect(collected.failed).toEqual([
-      expect.objectContaining({
-        agent_id: "second",
-        state: "FAILED_TERMINAL",
-        error: expect.objectContaining({ code: "ANCHOR_UNAVAILABLE", retryable: false }),
-      }),
-    ]);
+    expect(failed?.agent_id).toBe("second");
+    expect(failed?.state).toBe("FAILED_TERMINAL");
+    expect(failed?.error?.code).toBe("ANCHOR_UNAVAILABLE");
+    expect(failed?.error?.retryable).toBe(false);
   });
 
   it("excludes runtime-owned worker tabs when resolving the anchor for a new run", async () => {
@@ -601,6 +736,151 @@ describe("AgentRuntime", () => {
 
     expect(anchorRequests[0]).toEqual({ excludedTabIds: [] });
     expect(anchorRequests[2]).toEqual({ excludedTabIds: [20] });
+  });
+
+  it("completes from a fresh streamed snapshot without rereading the virtualized DOM", async () => {
+    let submittedPrompt = "";
+    let directReads = 0;
+    let snapshot: Record<string, unknown> | undefined;
+    const browser = {
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 801 } });
+        if (method === "chatgpt_worker_submit") {
+          submittedPrompt = args.prompt as string;
+          snapshot = {
+            ready: true,
+            generating: false,
+            latestUserText: submittedPrompt,
+            latestUserTruncated: false,
+            latestAssistantText: `Snapshot answer\n${completionMarker(submittedPrompt)}`,
+            latestAssistantTruncated: false,
+            revision: 2,
+            timestamp: Date.now() + 10,
+          };
+          return Promise.resolve({ submitted: true, snapshot: { revision: 1, timestamp: Date.now() } });
+        }
+        if (method === "read_chatgpt_worker") {
+          directReads += 1;
+          return Promise.reject(new Error("EXTRACTION_FAILED: assistant node was virtualized"));
+        }
+        if (method === "close_tab") return Promise.resolve({ closed: true });
+        return Promise.resolve({});
+      },
+      latestChatGptWorkerSnapshot: () => snapshot,
+      forgetChatGptWorkerSnapshot: () => undefined,
+    } as unknown as BrowserClient;
+    const runtime = new AgentRuntime(browser);
+    const spawned = await runtime.spawnAgents([{ agent_id: "snapshot", prompt: "answer once" }], 1);
+
+    const collected = await runtime.collectAgents(spawned.run_id);
+
+    expect(directReads).toBe(0);
+    expect(collected).toMatchObject({
+      state: "COMPLETE",
+      results: [{ agent_id: "snapshot", result: { type: "text", text: "Snapshot answer", truncated: false } }],
+    });
+  });
+
+  it("rejects stale or mismatched snapshots before falling back to a direct read", async () => {
+    let submittedPrompt = "";
+    let directReads = 0;
+    let snapshot: Record<string, unknown> | undefined;
+    const browser = {
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 802 } });
+        if (method === "chatgpt_worker_submit") {
+          submittedPrompt = args.prompt as string;
+          snapshot = {
+            ready: true,
+            generating: false,
+            latestUserText: "different worker turn",
+            latestUserTruncated: false,
+            latestAssistantText: `Wrong answer\n${completionMarker(submittedPrompt)}`,
+            latestAssistantTruncated: false,
+            revision: 2,
+            timestamp: Date.now() + 10,
+          };
+          return Promise.resolve({ submitted: true, snapshot: { revision: 2, timestamp: Date.now() } });
+        }
+        if (method === "read_chatgpt_worker_snapshot") {
+          return Promise.resolve({ snapshot: snapshot ? { ...snapshot, revision: 3 } : undefined });
+        }
+        if (method === "read_chatgpt_worker") {
+          directReads += 1;
+          return Promise.resolve({
+            ready: true,
+            generating: false,
+            latestUserText: submittedPrompt,
+            latestAssistantText: `Direct answer\n${completionMarker(submittedPrompt)}`,
+          });
+        }
+        if (method === "close_tab") return Promise.resolve({ closed: true });
+        return Promise.resolve({});
+      },
+      latestChatGptWorkerSnapshot: () => snapshot,
+      forgetChatGptWorkerSnapshot: () => undefined,
+    } as unknown as BrowserClient;
+    const runtime = new AgentRuntime(browser);
+    const spawned = await runtime.spawnAgents([{ agent_id: "identity", prompt: "answer once" }], 1);
+
+    const collected = await runtime.collectAgents(spawned.run_id);
+
+    expect(directReads).toBe(1);
+    expect(collected).toMatchObject({
+      state: "COMPLETE",
+      results: [{ agent_id: "identity", result: { type: "text", text: "Direct answer" } }],
+    });
+  });
+
+  it("does not leave a job pending for a fresh snapshot from another turn", async () => {
+    let submittedPrompt = "";
+    let directReads = 0;
+    let snapshot: Record<string, unknown> | undefined;
+    const browser = {
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        if (method === "new_tab") return Promise.resolve({ tab: { tabId: 803 } });
+        if (method === "chatgpt_worker_submit") {
+          submittedPrompt = args.prompt as string;
+          snapshot = {
+            ready: true,
+            generating: true,
+            latestUserText: "another worker turn",
+            latestUserTruncated: false,
+            latestAssistantText: null,
+            latestAssistantTruncated: false,
+            revision: 2,
+            timestamp: Date.now() + 10,
+          };
+          return Promise.resolve({ submitted: true, snapshot: { revision: 1, timestamp: Date.now() } });
+        }
+        if (method === "read_chatgpt_worker") {
+          directReads += 1;
+          return Promise.resolve({
+            ready: true,
+            generating: false,
+            latestUserText: submittedPrompt,
+            latestAssistantText: `Direct answer\n${completionMarker(submittedPrompt)}`,
+          });
+        }
+        if (method === "close_tab") return Promise.resolve({ closed: true });
+        return Promise.resolve({});
+      },
+      latestChatGptWorkerSnapshot: () => snapshot,
+      forgetChatGptWorkerSnapshot: () => undefined,
+    } as unknown as BrowserClient;
+    const runtime = new AgentRuntime(browser);
+    const spawned = await runtime.spawnAgents([{ agent_id: "partial-identity", prompt: "answer once" }], 1);
+
+    const collected = await runtime.collectAgents(spawned.run_id);
+
+    expect(directReads).toBe(1);
+    expect(collected).toMatchObject({
+      state: "COMPLETE",
+      results: [{ agent_id: "partial-identity", result: { type: "text", text: "Direct answer" } }],
+    });
   });
 
 });

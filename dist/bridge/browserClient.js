@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NativeMessageReader, writeNativeMessage } from "./nativeMessaging.js";
+const MAX_CHATGPT_WORKER_USER_CHARACTERS = 110_000;
+const MAX_CHATGPT_WORKER_ASSISTANT_CHARACTERS = 30_000;
 /** Represents a browser-bridge failure with a stable machine-readable code. */
 export class BrowserError extends Error {
     code;
@@ -19,11 +21,48 @@ function writeFailure(error) {
     const code = detail.startsWith("Native message exceeds") ? "BROWSER_PROTOCOL_ERROR" : "BROWSER_DISCONNECTED";
     return new BrowserError(code, detail);
 }
+/** Returns a snapshot only when an unsolicited native event has the bounded primitive fields the runtime accepts. */
+function validChatGptWorkerSnapshot(raw) {
+    if (!raw || typeof raw !== "object")
+        return undefined;
+    const snapshot = raw;
+    const revision = snapshot.revision;
+    const timestamp = snapshot.timestamp;
+    if (typeof snapshot.ready !== "boolean" ||
+        typeof snapshot.generating !== "boolean" ||
+        (typeof snapshot.latestUserText !== "string" && snapshot.latestUserText !== null) ||
+        typeof snapshot.latestUserTruncated !== "boolean" ||
+        (typeof snapshot.latestAssistantText !== "string" && snapshot.latestAssistantText !== null) ||
+        typeof snapshot.latestAssistantTruncated !== "boolean" ||
+        typeof revision !== "number" ||
+        !Number.isSafeInteger(revision) ||
+        revision <= 0 ||
+        typeof timestamp !== "number" ||
+        !Number.isSafeInteger(timestamp) ||
+        timestamp <= 0) {
+        return undefined;
+    }
+    if ((snapshot.latestUserText?.length ?? 0) > MAX_CHATGPT_WORKER_USER_CHARACTERS ||
+        (snapshot.latestAssistantText?.length ?? 0) > MAX_CHATGPT_WORKER_ASSISTANT_CHARACTERS) {
+        return undefined;
+    }
+    return {
+        ready: snapshot.ready,
+        generating: snapshot.generating,
+        latestUserText: snapshot.latestUserText,
+        latestUserTruncated: snapshot.latestUserTruncated,
+        latestAssistantText: snapshot.latestAssistantText,
+        latestAssistantTruncated: snapshot.latestAssistantTruncated,
+        revision,
+        timestamp,
+    };
+}
 /** Sends typed requests to the connected Chrome extension over Native Messaging. */
 export class BrowserClient {
     output;
     timeoutMs;
     pending = new Map();
+    chatGptWorkerSnapshots = new Map();
     ready = false;
     extensionVersion = null;
     extensionId = null;
@@ -38,6 +77,15 @@ export class BrowserClient {
     /** Returns the extension connection state advertised by the latest ready message. */
     status() {
         return { connected: this.ready, extensionVersion: this.extensionVersion, extensionId: this.extensionId };
+    }
+    /** Returns the latest validated ephemeral ChatGPT worker snapshot for one tab. */
+    latestChatGptWorkerSnapshot(tabId) {
+        const snapshot = this.chatGptWorkerSnapshots.get(tabId);
+        return snapshot ? { ...snapshot } : undefined;
+    }
+    /** Removes the ephemeral ChatGPT worker snapshot retained for one tab. */
+    forgetChatGptWorkerSnapshot(tabId) {
+        this.chatGptWorkerSnapshots.delete(tabId);
     }
     /** Sends one browser request and resolves it with the matching Native Messaging response. */
     async request(method, params = {}) {
@@ -68,9 +116,14 @@ export class BrowserClient {
             return;
         const message = raw;
         if (message.type === "ready") {
+            this.chatGptWorkerSnapshots.clear();
             this.ready = true;
             this.extensionVersion = message.extensionVersion;
             this.extensionId = message.extensionId;
+            return;
+        }
+        if (message.type === "event") {
+            this.cacheChatGptWorkerSnapshot(message);
             return;
         }
         if (message.type !== "response" || typeof message.id !== "string")
@@ -87,9 +140,26 @@ export class BrowserClient {
             pending.resolve(message.result);
         }
     }
+    /** Caches one newer, bounded worker snapshot from an unsolicited native event. */
+    cacheChatGptWorkerSnapshot(message) {
+        if (message.type !== "event" ||
+            message.event !== "chatgpt_worker_snapshot" ||
+            !Number.isSafeInteger(message.tabId) ||
+            message.tabId <= 0) {
+            return;
+        }
+        const snapshot = validChatGptWorkerSnapshot(message.snapshot);
+        if (!snapshot)
+            return;
+        const current = this.chatGptWorkerSnapshots.get(message.tabId);
+        if (current && snapshot.revision <= current.revision)
+            return;
+        this.chatGptWorkerSnapshots.set(message.tabId, snapshot);
+    }
     /** Rejects all pending requests after the Native Messaging transport becomes unusable. */
     failAll(error) {
         this.ready = false;
+        this.chatGptWorkerSnapshots.clear();
         for (const pending of this.pending.values()) {
             clearTimeout(pending.timeout);
             pending.reject(error);

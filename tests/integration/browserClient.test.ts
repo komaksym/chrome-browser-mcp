@@ -38,6 +38,167 @@ describe("BrowserClient", () => {
     await expect(client.request("list_tabs")).rejects.toThrow("not connected");
   });
 
+  it("caches a valid ChatGPT worker snapshot event for internal consumers", () => {
+    const fromExtension = new PassThrough();
+    const client = new BrowserClient(fromExtension, new PassThrough(), 2_000);
+
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "chatgpt_worker_snapshot",
+      tabId: 42,
+      snapshot: {
+        ready: true,
+        generating: true,
+        latestUserText: "Summarize this",
+        latestUserTruncated: false,
+        latestAssistantText: "Working on it",
+        latestAssistantTruncated: false,
+        revision: 3,
+        timestamp: 1_700_000_000_000,
+      },
+    });
+
+    expect(client.latestChatGptWorkerSnapshot(42)).toEqual({
+      ready: true,
+      generating: true,
+      latestUserText: "Summarize this",
+      latestUserTruncated: false,
+      latestAssistantText: "Working on it",
+      latestAssistantTruncated: false,
+      revision: 3,
+      timestamp: 1_700_000_000_000,
+    });
+  });
+
+  it("forgets the cached ChatGPT worker snapshot for one tab", () => {
+    const fromExtension = new PassThrough();
+    const client = new BrowserClient(fromExtension, new PassThrough(), 2_000);
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "chatgpt_worker_snapshot",
+      tabId: 42,
+      snapshot: {
+        ready: true,
+        generating: false,
+        latestUserText: "Summarize this",
+        latestUserTruncated: false,
+        latestAssistantText: "Done",
+        latestAssistantTruncated: false,
+        revision: 3,
+        timestamp: 1_700_000_000_000,
+      },
+    });
+
+    client.forgetChatGptWorkerSnapshot(42);
+
+    expect(client.latestChatGptWorkerSnapshot(42)).toBeUndefined();
+  });
+
+  it("rejects oversized ChatGPT worker snapshot events", () => {
+    const fromExtension = new PassThrough();
+    const client = new BrowserClient(fromExtension, new PassThrough(), 2_000);
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "chatgpt_worker_snapshot",
+      tabId: 42,
+      snapshot: {
+        ready: true,
+        generating: false,
+        latestUserText: "Summarize this",
+        latestUserTruncated: false,
+        latestAssistantText: "x".repeat(30_001),
+        latestAssistantTruncated: true,
+        revision: 3,
+        timestamp: 1_700_000_000_000,
+      },
+    });
+
+    expect(client.latestChatGptWorkerSnapshot(42)).toBeUndefined();
+  });
+
+  it("keeps the newest ChatGPT worker snapshot when events arrive out of order", () => {
+    const fromExtension = new PassThrough();
+    const client = new BrowserClient(fromExtension, new PassThrough(), 2_000);
+    const base = {
+      type: "event" as const,
+      event: "chatgpt_worker_snapshot" as const,
+      tabId: 42,
+      snapshot: {
+        ready: true,
+        generating: true,
+        latestUserText: "Summarize this",
+        latestUserTruncated: false,
+        latestAssistantText: "",
+        latestAssistantTruncated: false,
+        revision: 8,
+        timestamp: 1_700_000_000_008,
+      },
+    };
+
+    writeNativeMessage(fromExtension, { ...base, snapshot: { ...base.snapshot, latestAssistantText: "Newest" } });
+    writeNativeMessage(fromExtension, {
+      ...base,
+      snapshot: { ...base.snapshot, latestAssistantText: "Stale", revision: 7, timestamp: 1_700_000_000_007 },
+    });
+
+    expect(client.latestChatGptWorkerSnapshot(42)?.latestAssistantText).toBe("Newest");
+    expect(client.latestChatGptWorkerSnapshot(42)?.revision).toBe(8);
+  });
+
+  it("clears ChatGPT worker snapshots when a new native connection becomes ready", () => {
+    const fromExtension = new PassThrough();
+    const client = new BrowserClient(fromExtension, new PassThrough(), 2_000);
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "chatgpt_worker_snapshot",
+      tabId: 42,
+      snapshot: {
+        ready: true,
+        generating: false,
+        latestUserText: "Summarize this",
+        latestUserTruncated: false,
+        latestAssistantText: "Done",
+        latestAssistantTruncated: false,
+        revision: 8,
+        timestamp: 1_700_000_000_008,
+      },
+    });
+
+    writeNativeMessage(fromExtension, {
+      type: "ready",
+      extensionVersion: "0.1.0",
+      extensionId: "reconnected-extension",
+    });
+
+    expect(client.latestChatGptWorkerSnapshot(42)).toBeUndefined();
+  });
+
+  it("clears ChatGPT worker snapshots when the native connection closes", async () => {
+    const fromExtension = new PassThrough();
+    const client = new BrowserClient(fromExtension, new PassThrough(), 2_000);
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "chatgpt_worker_snapshot",
+      tabId: 42,
+      snapshot: {
+        ready: true,
+        generating: false,
+        latestUserText: "Summarize this",
+        latestUserTruncated: false,
+        latestAssistantText: "Done",
+        latestAssistantTruncated: false,
+        revision: 8,
+        timestamp: 1_700_000_000_008,
+      },
+    });
+
+    const ended = new Promise<void>((resolve) => fromExtension.once("end", resolve));
+    fromExtension.end();
+    await ended;
+
+    expect(client.latestChatGptWorkerSnapshot(42)).toBeUndefined();
+  });
+
   it("reports a structured transient error when a browser request times out", async () => {
     const fromExtension = new PassThrough();
     const client = new BrowserClient(fromExtension, new PassThrough(), 1);

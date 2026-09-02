@@ -8,6 +8,7 @@ interface NativeResponse {
 }
 
 let nativeMessageListener: ((message: unknown) => void) | undefined;
+let workerSnapshotListener: ((message: unknown, sender: chrome.runtime.MessageSender) => void) | undefined;
 const nativeMessages: unknown[] = [];
 const tabs = new Map<number, chrome.tabs.Tab>();
 const executeScript = vi.fn();
@@ -25,14 +26,19 @@ const chromeApi = {
     }),
     onInstalled: { addListener: vi.fn() },
     onStartup: { addListener: vi.fn() },
+    onMessage: {
+      addListener: (listener: (message: unknown, sender: chrome.runtime.MessageSender) => void) => {
+        workerSnapshotListener = listener;
+      },
+    },
   },
   tabs: {
     get: (tabId: number) => {
       const tab = tabs.get(tabId);
       return tab ? Promise.resolve(tab) : Promise.reject(new Error("TAB_NOT_FOUND: missing test tab"));
     },
-    query: vi.fn(),
-    create: vi.fn(),
+    query: vi.fn<() => Promise<chrome.tabs.Tab[]>>(() => Promise.resolve([])),
+    create: vi.fn<() => Promise<chrome.tabs.Tab>>(() => Promise.resolve(undefined as unknown as chrome.tabs.Tab)),
     update: updateTab,
     remove: vi.fn(),
   },
@@ -122,7 +128,7 @@ describe("extension background worker commands", () => {
     expect(executeScript).not.toHaveBeenCalled();
   });
   it("selects the most recently accessed eligible ChatGPT tab and excludes worker tabs", async () => {
-    vi.mocked(chromeApi.tabs.query).mockResolvedValue([
+    (chromeApi.tabs.query as unknown as { mockResolvedValue: (value: chrome.tabs.Tab[]) => void }).mockResolvedValue([
       {
         id: 10,
         url: "https://chatgpt.com/c/old",
@@ -181,7 +187,7 @@ describe("extension background worker commands", () => {
   });
 
   it("creates a worker tab in the explicitly requested window", async () => {
-    vi.mocked(chromeApi.tabs.create).mockResolvedValue({
+    (chromeApi.tabs.create as unknown as { mockResolvedValue: (value: chrome.tabs.Tab) => void }).mockResolvedValue({
       id: 88,
       url: "https://chatgpt.com/",
       incognito: false,
@@ -200,6 +206,80 @@ describe("extension background worker commands", () => {
       active: false,
       windowId: 9,
     });
+  });
+
+  it("forwards only newer bounded worker snapshots through the native event channel", () => {
+    const snapshot = {
+      ready: true,
+      generating: true,
+      latestUserText: "worker prompt",
+      latestUserTruncated: false,
+      latestAssistantText: "partial answer",
+      latestAssistantTruncated: false,
+      revision: 4,
+      timestamp: 1_000,
+    };
+    const sender = { tab: { id: 77 } } as chrome.runtime.MessageSender;
+
+    workerSnapshotListener?.({ type: "chatgpt_worker_snapshot", tabId: 77, snapshot }, sender);
+    workerSnapshotListener?.({
+      type: "chatgpt_worker_snapshot",
+      tabId: 77,
+      snapshot: { ...snapshot, revision: 3, timestamp: 2_000 },
+    }, sender);
+    workerSnapshotListener?.({
+      type: "chatgpt_worker_snapshot",
+      tabId: 77,
+      snapshot: { ...snapshot, revision: 5, timestamp: 3_000 },
+    }, { tab: { id: 76 } } as chrome.runtime.MessageSender);
+    workerSnapshotListener?.({
+      type: "chatgpt_worker_snapshot",
+      tabId: 77,
+      snapshot: { ...snapshot, revision: 6, timestamp: 4_000 },
+    }, {} as chrome.runtime.MessageSender);
+
+    expect(nativeMessages).toContainEqual({
+      type: "event",
+      event: "chatgpt_worker_snapshot",
+      tabId: 77,
+      snapshot,
+    });
+    expect(nativeMessages.filter((message) => (
+      typeof message === "object" && message !== null && (message as { type?: string }).type === "event"
+    ))).toHaveLength(1);
+  });
+
+  it("serves a cached worker snapshot without rereading the virtualized DOM", async () => {
+    const snapshot = {
+      ready: true,
+      generating: false,
+      latestUserText: "worker prompt",
+      latestUserTruncated: false,
+      latestAssistantText: "answer\n<<<SUBAGENT_DONE:marker>>>",
+      latestAssistantTruncated: false,
+      revision: 8,
+      timestamp: 2_000,
+    };
+    tabs.set(78, {
+      id: 78,
+      url: "https://chatgpt.com/",
+      status: "complete",
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 1,
+      index: 0,
+    } as chrome.tabs.Tab);
+    workerSnapshotListener?.(
+      { type: "chatgpt_worker_snapshot", tabId: 78, snapshot },
+      { tab: { id: 78 } } as chrome.runtime.MessageSender,
+    );
+
+    const response = await request("read_chatgpt_worker_snapshot", { tabId: 78, afterRevision: 0 });
+
+    expect(response).toMatchObject({ result: { snapshot, tab: { tabId: 78 } } });
+    expect(executeScript).not.toHaveBeenCalled();
   });
 
 });

@@ -157,6 +157,8 @@ function runChatGptWorkerCommand(command) {
   const maxUserCharacters = 11e4;
   const truncationNotice = "\n\n[Worker output truncated for safety]\n\n";
   const completionMarkerTailCharacters = 1024;
+  const snapshotPublishDelayMilliseconds = 50;
+  const observerHost = globalThis;
   const exactMessageText = (element) => {
     if (!element) return null;
     const contentSelector = ".markdown, [data-message-content]";
@@ -184,11 +186,112 @@ function runChatGptWorkerCommand(command) {
     if (text === null || text.length <= maxUserCharacters) return { text, truncated: false };
     return { text: text.slice(0, maxUserCharacters), truncated: true };
   };
-  const composer = document.querySelector(composerSelector);
-  const ready = composer instanceof HTMLElement && !("disabled" in composer && Boolean(composer.disabled)) && !("readOnly" in composer && Boolean(composer.readOnly));
+  const pageState = () => {
+    const composer2 = document.querySelector(composerSelector);
+    const ready2 = composer2 instanceof HTMLElement && !("disabled" in composer2 && Boolean(composer2.disabled)) && !("readOnly" in composer2 && Boolean(composer2.readOnly));
+    return { composer: composer2, ready: ready2 };
+  };
+  const latestRemovedMessage = (records, selector) => {
+    const candidates = [];
+    for (const record of records) {
+      for (const node of Array.from(record.removedNodes)) {
+        if (!(node instanceof Element)) continue;
+        if (node.matches(selector)) candidates.push(node);
+        candidates.push(...Array.from(node.querySelectorAll(selector)));
+      }
+    }
+    return candidates.at(-1);
+  };
+  const captureSnapshot = (previous, records = []) => {
+    const userMessages2 = Array.from(document.querySelectorAll(userMessageSelector));
+    const assistantMessages2 = Array.from(document.querySelectorAll(assistantMessageSelector));
+    const user2 = boundedUserText(
+      exactMessageText(userMessages2.at(-1)) ?? exactMessageText(latestRemovedMessage(records, userMessageSelector))
+    );
+    const assistant2 = boundedAssistantText(
+      exactMessageText(assistantMessages2.at(-1)) ?? exactMessageText(latestRemovedMessage(records, assistantMessageSelector))
+    );
+    const page = pageState();
+    return {
+      ready: page.ready,
+      generating: document.querySelector(generatingSelector) !== null,
+      latestUserText: user2.text ?? previous?.latestUserText ?? null,
+      latestUserTruncated: user2.text === null ? previous?.latestUserTruncated ?? false : user2.truncated,
+      latestAssistantText: assistant2.text ?? previous?.latestAssistantText ?? null,
+      latestAssistantTruncated: assistant2.text === null ? previous?.latestAssistantTruncated ?? false : assistant2.truncated,
+      revision: (previous?.revision ?? 0) + 1,
+      timestamp: Math.max(1, Date.now(), (previous?.timestamp ?? 0) + 1)
+    };
+  };
+  const sendSnapshot = (state, snapshot) => {
+    try {
+      const pending = chrome.runtime.sendMessage({ type: "chatgpt_worker_snapshot", tabId: state.tabId, snapshot });
+      if (pending && typeof pending.then === "function") {
+        void pending.catch(() => void 0);
+      }
+    } catch {
+    }
+  };
+  const publishSnapshot = (state) => {
+    const snapshot = captureSnapshot(state.snapshot);
+    state.snapshot = snapshot;
+    sendSnapshot(state, snapshot);
+    return snapshot;
+  };
+  const observe = (tabId, refresh = false) => {
+    const existing = observerHost.__chromeBrowserMcpChatGptWorkerObserver;
+    if (existing?.tabId === tabId && existing.snapshot) {
+      if (!refresh) return existing.snapshot;
+      if (existing.pendingPublish !== void 0) {
+        clearTimeout(existing.pendingPublish);
+        existing.pendingPublish = void 0;
+      }
+      return publishSnapshot(existing);
+    }
+    existing?.observer.disconnect();
+    if (existing?.pendingPublish !== void 0) clearTimeout(existing.pendingPublish);
+    const state = { tabId, observer: void 0 };
+    const schedulePublish = (records) => {
+      state.snapshot = captureSnapshot(state.snapshot, records);
+      if (state.pendingPublish !== void 0) return;
+      state.pendingPublish = setTimeout(() => {
+        state.pendingPublish = void 0;
+        if (typeof document !== "undefined" && typeof chrome !== "undefined") publishSnapshot(state);
+      }, snapshotPublishDelayMilliseconds);
+    };
+    state.observer = new MutationObserver((records) => {
+      if (typeof document === "undefined" || typeof chrome === "undefined") return;
+      schedulePublish(records);
+    });
+    observerHost.__chromeBrowserMcpChatGptWorkerObserver = state;
+    state.observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: [
+        "aria-label",
+        "aria-disabled",
+        "class",
+        "contenteditable",
+        "data-message-author-role",
+        "data-testid",
+        "disabled",
+        "hidden",
+        "readonly",
+        "style"
+      ]
+    });
+    return publishSnapshot(state);
+  };
+  if (command.action === "snapshot") return { snapshot: observe(command.tabId, true) };
+  const { composer, ready } = pageState();
   if (command.action === "submit") {
+    const snapshot = command.tabId === void 0 ? void 0 : observe(command.tabId);
     const existingUsers = Array.from(document.querySelectorAll(userMessageSelector));
-    if (exactMessageText(existingUsers.at(-1)) === command.prompt) return { submitted: true };
+    if (exactMessageText(existingUsers.at(-1)) === command.prompt) {
+      return snapshot === void 0 ? { submitted: true } : { submitted: true, snapshot };
+    }
     if (!ready || !(composer instanceof HTMLElement)) {
       throw new Error("CHATGPT_NOT_READY: composer is not ready");
     }
@@ -209,20 +312,13 @@ function runChatGptWorkerCommand(command) {
       throw new Error("CHATGPT_NOT_READY: send button is not ready");
     }
     sendButton.click();
-    return { submitted: true };
+    return snapshot === void 0 ? { submitted: true } : { submitted: true, snapshot };
   }
   const userMessages = Array.from(document.querySelectorAll(userMessageSelector));
   const assistantMessages = Array.from(document.querySelectorAll(assistantMessageSelector));
   const user = boundedUserText(exactMessageText(userMessages.at(-1)));
   const assistant = boundedAssistantText(exactMessageText(assistantMessages.at(-1)));
-  return {
-    ready,
-    generating: document.querySelector(generatingSelector) !== null,
-    latestUserText: user.text,
-    latestUserTruncated: user.truncated,
-    latestAssistantText: assistant.text,
-    latestAssistantTruncated: assistant.truncated
-  };
+  return { ready, generating: document.querySelector(generatingSelector) !== null, latestUserText: user.text, latestUserTruncated: user.truncated, latestAssistantText: assistant.text, latestAssistantTruncated: assistant.truncated };
 }
 
 // src/extension/background.ts
@@ -231,6 +327,7 @@ var RESTRICTED_SCHEMES = ["chrome:", "chrome-extension:", "devtools:", "view-sou
 var nativePort = null;
 var reconnectTimer = null;
 var reconnectDelay = 500;
+var workerSnapshots = /* @__PURE__ */ new Map();
 var SENSITIVE_QUERY_KEY = /(?:access[_-]?token|token|auth|authorization|api[_-]?key|secret|session|code|sig|signature|jwt|credential|password)/i;
 function resolveTabUrl(tab) {
   return tab.url || tab.pendingUrl || "";
@@ -248,6 +345,33 @@ function sanitizeUrl(rawUrl) {
   } catch {
     return "";
   }
+}
+function isChatGptWorkerSnapshot(value) {
+  if (!value || typeof value !== "object") return false;
+  const snapshot = value;
+  return typeof snapshot.ready === "boolean" && typeof snapshot.generating === "boolean" && (snapshot.latestUserText === null || typeof snapshot.latestUserText === "string" && snapshot.latestUserText.length <= 11e4) && typeof snapshot.latestUserTruncated === "boolean" && (snapshot.latestAssistantText === null || typeof snapshot.latestAssistantText === "string" && snapshot.latestAssistantText.length <= 3e4) && typeof snapshot.latestAssistantTruncated === "boolean" && typeof snapshot.revision === "number" && Number.isSafeInteger(snapshot.revision) && snapshot.revision > 0 && typeof snapshot.timestamp === "number" && Number.isSafeInteger(snapshot.timestamp) && snapshot.timestamp > 0;
+}
+function rememberChatGptWorkerSnapshot(tabId, snapshot) {
+  if (!Number.isInteger(tabId) || tabId <= 0 || !isChatGptWorkerSnapshot(snapshot)) return;
+  const previous = workerSnapshots.get(tabId);
+  if (previous && (snapshot.revision < previous.revision || snapshot.revision === previous.revision && snapshot.timestamp <= previous.timestamp)) {
+    return;
+  }
+  workerSnapshots.set(tabId, snapshot);
+  nativePort?.postMessage({
+    type: "event",
+    event: "chatgpt_worker_snapshot",
+    tabId,
+    snapshot
+  });
+}
+function handleChatGptWorkerSnapshotMessage(message, sender) {
+  if (!message || typeof message !== "object") return;
+  const candidate = message;
+  if (candidate.type !== "chatgpt_worker_snapshot") return;
+  if (sender.tab?.id !== candidate.tabId) return;
+  if (typeof candidate.tabId !== "number" || !isChatGptWorkerSnapshot(candidate.snapshot)) return;
+  rememberChatGptWorkerSnapshot(candidate.tabId, candidate.snapshot);
 }
 function serializeTab(tab) {
   const rawUrl = resolveTabUrl(tab);
@@ -289,6 +413,40 @@ function httpUrlParam(params, key) {
 async function listTabs(windowId) {
   const tabs = await chrome.tabs.query(windowId === void 0 ? {} : { windowId });
   return tabs.filter((tab) => !tab.incognito).map(serializeTab);
+}
+function isChatGptTab(tab) {
+  try {
+    return new URL(resolveTabUrl(tab)).hostname === "chatgpt.com";
+  } catch {
+    return false;
+  }
+}
+async function resolveChatGptAnchor(params) {
+  const anchorTabId = numberParam(params, "anchorTabId", -1);
+  if (anchorTabId > 0) {
+    let tab2;
+    try {
+      tab2 = await chrome.tabs.get(anchorTabId);
+    } catch {
+      throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer available");
+    }
+    if (tab2.id === void 0 || tab2.incognito || !isChatGptTab(tab2)) {
+      throw new Error("ANCHOR_UNAVAILABLE: Parent ChatGPT tab is no longer eligible");
+    }
+    return { tab: serializeTab(tab2) };
+  }
+  const excluded = new Set(
+    Array.isArray(params.excludedTabIds) ? params.excludedTabIds.filter((value) => typeof value === "number" && Number.isInteger(value)) : []
+  );
+  const tabs = await chrome.tabs.query({ windowType: "normal" });
+  const candidates = tabs.filter((tab2) => tab2.id !== void 0 && !tab2.incognito && !excluded.has(tab2.id) && isChatGptTab(tab2)).sort((left, right) => {
+    const leftAccessed = left.lastAccessed ?? 0;
+    const rightAccessed = right.lastAccessed ?? 0;
+    return rightAccessed - leftAccessed;
+  });
+  const tab = candidates[0];
+  if (!tab) throw new Error("ANCHOR_UNAVAILABLE: No eligible parent ChatGPT tab is available");
+  return { tab: serializeTab(tab) };
 }
 async function getValidatedReadableTab(tabId, requireWorkerOrigin = true) {
   const tab = await chrome.tabs.get(tabId);
@@ -332,6 +490,15 @@ async function runChatGptWorker(tabId, command) {
   const result = injection[0]?.result;
   if (!result) throw new Error("EXTRACTION_FAILED: No ChatGPT worker result returned");
   return { ...result, tab: serializeTab(tab) };
+}
+async function readChatGptWorkerSnapshot(tabId, afterRevision) {
+  const tab = await getValidatedReadableTab(tabId);
+  const cached = workerSnapshots.get(tabId);
+  if (cached && cached.revision > afterRevision) return { snapshot: cached, tab: serializeTab(tab) };
+  const result = await runChatGptWorker(tabId, { action: "snapshot", tabId });
+  const snapshot = result.snapshot;
+  if (isChatGptWorkerSnapshot(snapshot)) rememberChatGptWorkerSnapshot(tabId, snapshot);
+  return result;
 }
 async function activateWorkerTab(tabId, allowNonWorker = false) {
   const tab = allowNonWorker ? await chrome.tabs.get(tabId) : await getValidatedReadableTab(tabId);
@@ -417,6 +584,8 @@ async function execute(method, params) {
       }
       return { results, count: results.length };
     }
+    case "resolve_chatgpt_anchor":
+      return resolveChatGptAnchor(params);
     case "search_tabs": {
       const query = (typeof params.query === "string" ? params.query : "").trim().toLocaleLowerCase();
       const maxResults = Math.min(100, Math.max(1, numberParam(params, "maxResults", 20)));
@@ -428,10 +597,16 @@ ${tab.url}`.toLocaleLowerCase().includes(query)).slice(0, maxResults);
     case "chatgpt_worker_submit":
       return runChatGptWorker(numberParam(params, "tabId", -1), {
         action: "submit",
-        prompt: stringParam(params, "prompt")
+        prompt: stringParam(params, "prompt"),
+        tabId: numberParam(params, "tabId", -1)
       });
     case "read_chatgpt_worker":
       return runChatGptWorker(numberParam(params, "tabId", -1), { action: "read" });
+    case "read_chatgpt_worker_snapshot":
+      return readChatGptWorkerSnapshot(
+        numberParam(params, "tabId", -1),
+        Math.max(0, numberParam(params, "afterRevision", 0))
+      );
     case "activate_worker_tab":
       return activateWorkerTab(numberParam(params, "tabId", -1), params.allowNonWorker === true);
     case "reload_worker_tab":
@@ -470,7 +645,12 @@ ${tab.url}`.toLocaleLowerCase().includes(query)).slice(0, maxResults);
       return { tab: serializeTab(updated) };
     }
     case "new_tab": {
-      const tab = await chrome.tabs.create({ url: httpUrlParam(params, "url"), active: params.active !== false });
+      const windowId = numberParam(params, "windowId", -1);
+      const tab = await chrome.tabs.create({
+        url: httpUrlParam(params, "url"),
+        active: params.active !== false,
+        ...windowId >= 0 ? { windowId } : {}
+      });
       if (tab.incognito) throw new Error("INCOGNITO_DISABLED: Incognito tabs are excluded");
       return { tab: serializeTab(tab) };
     }
@@ -480,10 +660,14 @@ ${tab.url}`.toLocaleLowerCase().includes(query)).slice(0, maxResults);
       assertReadableTab(tab);
       const summary = serializeTab(tab);
       await chrome.tabs.remove(tabId);
+      workerSnapshots.delete(tabId);
       return { closed: true, tab: summary };
     }
   }
 }
+chrome.runtime.onMessage.addListener((message, sender) => {
+  handleChatGptWorkerSnapshotMessage(message, sender);
+});
 function connectNative() {
   if (nativePort) return;
   try {
@@ -494,6 +678,9 @@ function connectNative() {
       extensionVersion: chrome.runtime.getManifest().version,
       extensionId: chrome.runtime.id
     });
+    for (const [tabId, snapshot] of workerSnapshots) {
+      nativePort.postMessage({ type: "event", event: "chatgpt_worker_snapshot", tabId, snapshot });
+    }
     nativePort.onMessage.addListener((message) => {
       if (!message || typeof message !== "object" || !("type" in message) || message.type !== "request") return;
       const request = message;

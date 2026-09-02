@@ -1,4 +1,4 @@
-import type { BrowserMethod } from "../bridge/types.js";
+import type { BrowserMethod, ChatGptWorkerSnapshot } from "../bridge/types.js";
 import { performPageAction, type PageAction } from "./actions.js";
 import { extractPage } from "./extractor.js";
 import { runChatGptWorkerCommand, type ChatGptWorkerCommand } from "./chatgptWorker.js";
@@ -11,11 +11,18 @@ interface NativeRequest {
   params: Record<string, unknown>;
 }
 
+interface ChatGptWorkerSnapshotMessage {
+  type: "chatgpt_worker_snapshot";
+  tabId: number;
+  snapshot: ChatGptWorkerSnapshot;
+}
+
 const HOST_NAME = "com.komaksym.chrome_browser_mcp";
 const RESTRICTED_SCHEMES = ["chrome:", "chrome-extension:", "devtools:", "view-source:", "about:"];
 let nativePort: chrome.runtime.Port | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectDelay = 500;
+const workerSnapshots = new Map<number, ChatGptWorkerSnapshot>();
 
 const SENSITIVE_QUERY_KEY = /(?:access[_-]?token|token|auth|authorization|api[_-]?key|secret|session|code|sig|signature|jwt|credential|password)/i;
 
@@ -38,6 +45,58 @@ function sanitizeUrl(rawUrl: string): string {
   } catch {
     return "";
   }
+}
+
+/** Returns whether an observer payload is a bounded, well-typed worker snapshot. */
+function isChatGptWorkerSnapshot(value: unknown): value is ChatGptWorkerSnapshot {
+  if (!value || typeof value !== "object") return false;
+  const snapshot = value as Partial<ChatGptWorkerSnapshot>;
+  return (
+    typeof snapshot.ready === "boolean" &&
+    typeof snapshot.generating === "boolean" &&
+    (snapshot.latestUserText === null ||
+      (typeof snapshot.latestUserText === "string" && snapshot.latestUserText.length <= 110_000)) &&
+    typeof snapshot.latestUserTruncated === "boolean" &&
+    (snapshot.latestAssistantText === null ||
+      (typeof snapshot.latestAssistantText === "string" && snapshot.latestAssistantText.length <= 30_000)) &&
+    typeof snapshot.latestAssistantTruncated === "boolean" &&
+    typeof snapshot.revision === "number" &&
+    Number.isSafeInteger(snapshot.revision) &&
+    snapshot.revision > 0 &&
+    typeof snapshot.timestamp === "number" &&
+    Number.isSafeInteger(snapshot.timestamp) &&
+    snapshot.timestamp > 0
+  );
+}
+
+/** Forwards a newer ephemeral worker snapshot to the native host and runtime. */
+function rememberChatGptWorkerSnapshot(tabId: number, snapshot: ChatGptWorkerSnapshot): void {
+  if (!Number.isInteger(tabId) || tabId <= 0 || !isChatGptWorkerSnapshot(snapshot)) return;
+  const previous = workerSnapshots.get(tabId);
+  if (
+    previous &&
+    (snapshot.revision < previous.revision ||
+      (snapshot.revision === previous.revision && snapshot.timestamp <= previous.timestamp))
+  ) {
+    return;
+  }
+  workerSnapshots.set(tabId, snapshot);
+  nativePort?.postMessage({
+    type: "event",
+    event: "chatgpt_worker_snapshot",
+    tabId,
+    snapshot,
+  });
+}
+
+/** Accepts observer messages from the ChatGPT page's extension isolated world. */
+function handleChatGptWorkerSnapshotMessage(message: unknown, sender: chrome.runtime.MessageSender): void {
+  if (!message || typeof message !== "object") return;
+  const candidate = message as Partial<ChatGptWorkerSnapshotMessage>;
+  if (candidate.type !== "chatgpt_worker_snapshot") return;
+  if (sender.tab?.id !== candidate.tabId) return;
+  if (typeof candidate.tabId !== "number" || !isChatGptWorkerSnapshot(candidate.snapshot)) return;
+  rememberChatGptWorkerSnapshot(candidate.tabId, candidate.snapshot);
 }
 
 /** Converts Chrome's tab metadata into the safe public tab summary. */
@@ -123,8 +182,8 @@ async function resolveChatGptAnchor(params: Record<string, unknown>) {
   const candidates = tabs
     .filter((tab) => tab.id !== undefined && !tab.incognito && !excluded.has(tab.id) && isChatGptTab(tab))
     .sort((left, right) => {
-      const leftAccessed = (left as chrome.tabs.Tab & { lastAccessed?: number }).lastAccessed ?? 0;
-      const rightAccessed = (right as chrome.tabs.Tab & { lastAccessed?: number }).lastAccessed ?? 0;
+      const leftAccessed = left.lastAccessed ?? 0;
+      const rightAccessed = right.lastAccessed ?? 0;
       return rightAccessed - leftAccessed;
     });
   const tab = candidates[0];
@@ -180,6 +239,17 @@ async function runChatGptWorker(tabId: number, command: ChatGptWorkerCommand) {
   const result = injection[0]?.result;
   if (!result) throw new Error("EXTRACTION_FAILED: No ChatGPT worker result returned");
   return { ...result, tab: serializeTab(tab) };
+}
+
+/** Returns a fresh cached snapshot or asks the worker page for one when the cache missed it. */
+async function readChatGptWorkerSnapshot(tabId: number, afterRevision: number) {
+  const tab = await getValidatedReadableTab(tabId);
+  const cached = workerSnapshots.get(tabId);
+  if (cached && cached.revision > afterRevision) return { snapshot: cached, tab: serializeTab(tab) };
+  const result = await runChatGptWorker(tabId, { action: "snapshot", tabId });
+  const snapshot = (result as { snapshot?: unknown }).snapshot;
+  if (isChatGptWorkerSnapshot(snapshot)) rememberChatGptWorkerSnapshot(tabId, snapshot);
+  return result;
 }
 
 /** Activates one ChatGPT worker tab for recovery and returns its current metadata. */
@@ -292,9 +362,15 @@ async function execute(method: BrowserMethod, params: Record<string, unknown>): 
       return runChatGptWorker(numberParam(params, "tabId", -1), {
         action: "submit",
         prompt: stringParam(params, "prompt"),
+        tabId: numberParam(params, "tabId", -1),
       });
     case "read_chatgpt_worker":
       return runChatGptWorker(numberParam(params, "tabId", -1), { action: "read" });
+    case "read_chatgpt_worker_snapshot":
+      return readChatGptWorkerSnapshot(
+        numberParam(params, "tabId", -1),
+        Math.max(0, numberParam(params, "afterRevision", 0)),
+      );
     case "activate_worker_tab":
       return activateWorkerTab(numberParam(params, "tabId", -1), params.allowNonWorker === true);
     case "reload_worker_tab":
@@ -348,10 +424,15 @@ async function execute(method: BrowserMethod, params: Record<string, unknown>): 
       assertReadableTab(tab);
       const summary = serializeTab(tab);
       await chrome.tabs.remove(tabId);
+      workerSnapshots.delete(tabId);
       return { closed: true, tab: summary };
     }
   }
 }
+
+chrome.runtime.onMessage.addListener((message, sender) => {
+  handleChatGptWorkerSnapshotMessage(message, sender);
+});
 
 /** Opens the native bridge once and installs reconnect handling for extension restarts. */
 function connectNative(): void {
@@ -364,6 +445,9 @@ function connectNative(): void {
       extensionVersion: chrome.runtime.getManifest().version,
       extensionId: chrome.runtime.id,
     });
+    for (const [tabId, snapshot] of workerSnapshots) {
+      nativePort.postMessage({ type: "event", event: "chatgpt_worker_snapshot", tabId, snapshot });
+    }
     nativePort.onMessage.addListener((message: unknown) => {
       if (!message || typeof message !== "object" || !("type" in message) || (message as { type?: string }).type !== "request") return;
       const request = message as NativeRequest;
