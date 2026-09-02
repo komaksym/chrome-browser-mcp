@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { AgentRuntime } from "../../src/bridge/agentRuntime.js";
 import type { BrowserClient } from "../../src/bridge/browserClient.js";
+import { withAgentAnchor } from "../agentBrowserFixture.js";
 
 type RecoveryReadResult = {
   ready: boolean;
@@ -27,8 +28,7 @@ it("keeps cancellation authoritative when a recovery read finishes late", async 
   let reads = 0;
 
   const browser = {
-    request: (method: string, args: Record<string, unknown> = {}) => {
-      if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+    request: withAgentAnchor((method: string, args: Record<string, unknown> = {}) => {
       if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
       if (method === "chatgpt_worker_submit") {
         submissions += 1;
@@ -55,7 +55,7 @@ it("keeps cancellation authoritative when a recovery read finishes late", async 
       if (method === "reload_worker_tab") return Promise.resolve({});
       if (method === "close_tab") return Promise.resolve({ closed: true });
       return Promise.resolve({});
-    },
+    }, { tabId: 9000, windowId: 42 }),
   } as BrowserClient;
 
   const runtime = new AgentRuntime(browser);
