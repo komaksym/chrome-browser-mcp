@@ -16,33 +16,42 @@ const RESTRICTED_SCHEMES = ["chrome:", "chrome-extension:", "devtools:", "view-s
 let nativePort: chrome.runtime.Port | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectDelay = 500;
-const runtimeWorkerTabIds = new Set<number>();
-const pendingWorkerOpeners = new Map<number, number>();
+const knownAgentWorkerTabIds = new Set<number>();
+const pendingWorkerCreationsByAnchorTabId = new Map<number, number>();
 
-/** Marks one parent tab as having an agent worker creation in flight. */
-function markPendingWorkerOpener(anchorTabId: number): void {
-  pendingWorkerOpeners.set(anchorTabId, (pendingWorkerOpeners.get(anchorTabId) ?? 0) + 1);
+/** Records one in-flight worker creation for an anchor tab. */
+function beginPendingWorkerCreation(anchorTabId: number): void {
+  pendingWorkerCreationsByAnchorTabId.set(
+    anchorTabId,
+    (pendingWorkerCreationsByAnchorTabId.get(anchorTabId) ?? 0) + 1,
+  );
 }
 
-/** Releases one in-flight worker creation marker without disturbing concurrent creations for the same parent. */
-function unmarkPendingWorkerOpener(anchorTabId: number): void {
-  const count = pendingWorkerOpeners.get(anchorTabId) ?? 0;
-  if (count <= 1) pendingWorkerOpeners.delete(anchorTabId);
-  else pendingWorkerOpeners.set(anchorTabId, count - 1);
+/** Releases one in-flight worker creation without disturbing concurrent creations for the same anchor. */
+function finishPendingWorkerCreation(anchorTabId: number): void {
+  const pendingCount = pendingWorkerCreationsByAnchorTabId.get(anchorTabId) ?? 0;
+  if (pendingCount <= 1) pendingWorkerCreationsByAnchorTabId.delete(anchorTabId);
+  else pendingWorkerCreationsByAnchorTabId.set(anchorTabId, pendingCount - 1);
 }
 
-/** Returns whether a tab belongs to a worker creation that has not yet returned its tab ID to the runtime. */
-function isPendingAgentWorker(tab: chrome.tabs.Tab): boolean {
-  return tab.openerTabId !== undefined && (pendingWorkerOpeners.get(tab.openerTabId) ?? 0) > 0;
+/** Returns whether a tab was opened by an anchor whose worker creation is still in flight. */
+function isAgentWorkerCreationInFlight(tab: chrome.tabs.Tab): boolean {
+  return (
+    tab.openerTabId !== undefined &&
+    (pendingWorkerCreationsByAnchorTabId.get(tab.openerTabId) ?? 0) > 0
+  );
 }
 
 /** Accepts only ordinary non-worker ChatGPT tabs as run anchors. */
-function isEligibleAgentAnchor(tab: chrome.tabs.Tab, excluded: Set<number>): tab is chrome.tabs.Tab & { id: number } {
+function isEligibleAgentAnchor(
+  tab: chrome.tabs.Tab,
+  excludedTabIds: Set<number>,
+): tab is chrome.tabs.Tab & { id: number } {
   if (
     tab.id === undefined ||
-    excluded.has(tab.id) ||
-    runtimeWorkerTabIds.has(tab.id) ||
-    isPendingAgentWorker(tab) ||
+    excludedTabIds.has(tab.id) ||
+    knownAgentWorkerTabIds.has(tab.id) ||
+    isAgentWorkerCreationInFlight(tab) ||
     tab.incognito
   ) {
     return false;
@@ -57,17 +66,17 @@ function isEligibleAgentAnchor(tab: chrome.tabs.Tab, excluded: Set<number>): tab
 }
 
 async function resolveAgentAnchor(params: Record<string, unknown>) {
-  const requestedId =
+  const requestedAnchorTabId =
     typeof params.tabId === "number" && Number.isInteger(params.tabId) ? params.tabId : undefined;
-  const excluded = new Set(
+  const excludedTabIds = new Set(
     Array.isArray(params.excludeTabIds)
       ? params.excludeTabIds.filter((value): value is number => typeof value === "number" && Number.isInteger(value))
       : [],
   );
 
-  if (requestedId !== undefined) {
+  if (requestedAnchorTabId !== undefined) {
     try {
-      const tab = await chrome.tabs.get(requestedId);
+      const tab = await chrome.tabs.get(requestedAnchorTabId);
       if (!isEligibleAgentAnchor(tab, new Set())) throw new Error();
       return { tab: serializeTab(tab) };
     } catch {
@@ -75,17 +84,17 @@ async function resolveAgentAnchor(params: Record<string, unknown>) {
     }
   }
 
-  const tabs = await chrome.tabs.query({ windowType: "normal" });
-  const candidates = tabs
-    .filter((tab) => isEligibleAgentAnchor(tab, excluded))
+  const normalTabs = await chrome.tabs.query({ windowType: "normal" });
+  const eligibleAnchors = normalTabs
+    .filter((tab) => isEligibleAgentAnchor(tab, excludedTabIds))
     .sort((left, right) => {
-      const l = left.lastAccessed ?? 0;
-      const r = right.lastAccessed ?? 0;
-      return r - l;
+      const leftLastAccessed = left.lastAccessed ?? 0;
+      const rightLastAccessed = right.lastAccessed ?? 0;
+      return rightLastAccessed - leftLastAccessed;
     });
-  const tab = candidates[0];
-  if (!tab) throw new Error("AGENT_ANCHOR_UNAVAILABLE: No eligible parent ChatGPT tab is available");
-  return { tab: serializeTab(tab) };
+  const anchorTab = eligibleAnchors[0];
+  if (!anchorTab) throw new Error("AGENT_ANCHOR_UNAVAILABLE: No eligible parent ChatGPT tab is available");
+  return { tab: serializeTab(anchorTab) };
 }
 
 /** Creates one private worker from its stored parent, retrying only when the parent moves during creation. */
@@ -94,7 +103,7 @@ async function openAgentWorkerTab(anchorTabId: number) {
     throw new Error("INVALID_ARGUMENT: anchorTabId is required");
   }
 
-  markPendingWorkerOpener(anchorTabId);
+  beginPendingWorkerCreation(anchorTabId);
   try {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       let anchor: chrome.tabs.Tab;
@@ -121,7 +130,7 @@ async function openAgentWorkerTab(anchorTabId: number) {
           await chrome.tabs.remove(tab.id).catch(() => undefined);
           throw new Error("INCOGNITO_DISABLED: Incognito tabs are excluded");
         }
-        runtimeWorkerTabIds.add(tab.id);
+        knownAgentWorkerTabIds.add(tab.id);
         return { tab: serializeTab(tab) };
       } catch (error) {
         let currentAnchor: chrome.tabs.Tab;
@@ -139,7 +148,7 @@ async function openAgentWorkerTab(anchorTabId: number) {
     }
     throw new Error("AGENT_ANCHOR_UNAVAILABLE: Parent ChatGPT tab moved during worker creation");
   } finally {
-    unmarkPendingWorkerOpener(anchorTabId);
+    finishPendingWorkerCreation(anchorTabId);
   }
 }
 
@@ -483,7 +492,7 @@ function scheduleReconnect(): void {
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  runtimeWorkerTabIds.delete(tabId);
+  knownAgentWorkerTabIds.delete(tabId);
 });
 chrome.runtime.onInstalled.addListener(connectNative);
 chrome.runtime.onStartup.addListener(connectNative);
