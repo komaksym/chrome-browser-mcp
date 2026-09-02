@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-and-commit:
-    if: github.event.head_commit.message == 'ci: build agent reliability patch'
+    if: "${{ github.event.head_commit.message == 'ci: build agent reliability patch' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
