@@ -12,6 +12,7 @@ interface WorkerTabState {
     discarded: boolean;
     status: string;
 }
+type RecoveryStep = "current_state" | "bounded_reread" | "activate_worker_tab" | "reload_worker_tab";
 interface ObservationDiagnostics {
     observation_source?: "initial_read" | "backoff_reread" | "activated_reread" | "reload_reread";
     observation_state?: {
@@ -20,7 +21,7 @@ interface ObservationDiagnostics {
         hasAssistantText: boolean;
     };
     tab?: Pick<WorkerTabState, "active" | "discarded" | "status" | "windowId">;
-    recovery_steps: string[];
+    recovery_steps: RecoveryStep[];
     uncertainty_reason?: string;
 }
 interface AgentError {
@@ -64,6 +65,7 @@ export declare class AgentRuntime {
             satisfied: boolean;
         };
         results: {
+            diagnostics?: ObservationDiagnostics | undefined;
             job_id: string;
             agent_id: string;
             task_id: string;
