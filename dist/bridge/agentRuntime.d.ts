@@ -57,6 +57,10 @@ export declare class AgentRuntime {
     }>;
     /** Returns whether a tab is owned by any live runtime job and must stay private from generic tools. */
     isWorkerTab(tabId: number): boolean;
+    /** Returns all currently runtime-owned worker tab IDs so they cannot become run anchors. */
+    private workerTabIds;
+    /** Resolves the run anchor's current window and fails rather than falling back to browser focus. */
+    private resolveAnchorWindow;
     /** Advances one run atomically, returning only marker-validated worker results. */
     collectAgents(runId: string): Promise<{
         run_id: string;

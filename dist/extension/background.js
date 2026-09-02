@@ -231,6 +231,40 @@ var RESTRICTED_SCHEMES = ["chrome:", "chrome-extension:", "devtools:", "view-sou
 var nativePort = null;
 var reconnectTimer = null;
 var reconnectDelay = 500;
+function isChatGptAnchorCandidate(tab, excluded) {
+  if (tab.id === void 0 || excluded.has(tab.id) || tab.incognito) return false;
+  const rawUrl = resolveTabUrl(tab);
+  try {
+    const url = new URL(rawUrl);
+    return (url.protocol === "https:" || url.protocol === "http:") && url.hostname === "chatgpt.com";
+  } catch {
+    return false;
+  }
+}
+async function resolveAgentAnchor(params) {
+  const requestedId = typeof params.tabId === "number" && Number.isInteger(params.tabId) ? params.tabId : void 0;
+  const excluded = new Set(
+    Array.isArray(params.excludeTabIds) ? params.excludeTabIds.filter((value) => typeof value === "number" && Number.isInteger(value)) : []
+  );
+  if (requestedId !== void 0) {
+    try {
+      const tab2 = await chrome.tabs.get(requestedId);
+      if (!isChatGptAnchorCandidate(tab2, /* @__PURE__ */ new Set())) throw new Error();
+      return { tab: serializeTab(tab2) };
+    } catch {
+      throw new Error("AGENT_ANCHOR_UNAVAILABLE: Parent ChatGPT tab is unavailable");
+    }
+  }
+  const tabs = await chrome.tabs.query({ windowType: "normal" });
+  const candidates = tabs.filter((tab2) => isChatGptAnchorCandidate(tab2, excluded)).sort((left, right) => {
+    const l = left.lastAccessed ?? 0;
+    const r = right.lastAccessed ?? 0;
+    return r - l;
+  });
+  const tab = candidates[0];
+  if (!tab) throw new Error("AGENT_ANCHOR_UNAVAILABLE: No eligible parent ChatGPT tab is available");
+  return { tab: serializeTab(tab) };
+}
 var SENSITIVE_QUERY_KEY = /(?:access[_-]?token|token|auth|authorization|api[_-]?key|secret|session|code|sig|signature|jwt|credential|password)/i;
 function resolveTabUrl(tab) {
   return tab.url || tab.pendingUrl || "";
@@ -373,6 +407,8 @@ function stringParam(params, key, allowEmpty = false) {
 }
 async function execute(method, params) {
   switch (method) {
+    case "resolve_agent_anchor":
+      return resolveAgentAnchor(params);
     case "browser_status":
       return {
         connected: true,
@@ -470,7 +506,12 @@ ${tab.url}`.toLocaleLowerCase().includes(query)).slice(0, maxResults);
       return { tab: serializeTab(updated) };
     }
     case "new_tab": {
-      const tab = await chrome.tabs.create({ url: httpUrlParam(params, "url"), active: params.active !== false });
+      const windowId = typeof params.windowId === "number" && Number.isInteger(params.windowId) ? params.windowId : void 0;
+      const tab = await chrome.tabs.create({
+        url: httpUrlParam(params, "url"),
+        active: params.active !== false,
+        ...windowId === void 0 ? {} : { windowId }
+      });
       if (tab.incognito) throw new Error("INCOGNITO_DISABLED: Incognito tabs are excluded");
       return { tab: serializeTab(tab) };
     }

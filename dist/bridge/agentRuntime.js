@@ -100,8 +100,15 @@ export class AgentRuntime {
                 state: "CREATED",
             };
         });
+        const anchor = await this.browser.request("resolve_agent_anchor", {
+            excludeTabIds: this.workerTabIds(),
+        });
+        if (!Number.isInteger(anchor.tab?.tabId) || anchor.tab.tabId <= 0) {
+            throw new Error("AGENT_ANCHOR_UNAVAILABLE: Could not resolve a parent ChatGPT tab");
+        }
         const run = {
             runId,
+            anchorTabId: anchor.tab.tabId,
             maxConcurrency,
             jobs,
             operation: Promise.resolve(),
@@ -114,6 +121,22 @@ export class AgentRuntime {
     /** Returns whether a tab is owned by any live runtime job and must stay private from generic tools. */
     isWorkerTab(tabId) {
         return [...this.runs.values()].some((run) => run.jobs.some((job) => job.tabId === tabId));
+    }
+    /** Returns all currently runtime-owned worker tab IDs so they cannot become run anchors. */
+    workerTabIds() {
+        return [...this.runs.values()].flatMap((run) => run.jobs.flatMap((job) => (job.tabId === undefined ? [] : [job.tabId])));
+    }
+    /** Resolves the run anchor's current window and fails rather than falling back to browser focus. */
+    async resolveAnchorWindow(run) {
+        const anchor = await this.browser.request("resolve_agent_anchor", {
+            tabId: run.anchorTabId,
+        });
+        if (anchor.tab?.tabId !== run.anchorTabId ||
+            !Number.isInteger(anchor.tab?.windowId) ||
+            anchor.tab.windowId < 0) {
+            throw new Error("AGENT_ANCHOR_UNAVAILABLE: Parent ChatGPT tab is unavailable");
+        }
+        return anchor.tab.windowId;
     }
     /** Advances one run atomically, returning only marker-validated worker results. */
     async collectAgents(runId) {
@@ -244,11 +267,13 @@ export class AgentRuntime {
         if (run.cancellationRequested)
             return;
         try {
+            const windowId = await this.resolveAnchorWindow(run);
             let tabId = job.tabId;
             if (tabId === undefined) {
                 const opened = await this.browser.request("new_tab", {
                     url: "https://chatgpt.com/",
                     active: false,
+                    windowId,
                 });
                 tabId = opened.tab.tabId;
                 if (!Number.isInteger(tabId) || tabId <= 0) {
