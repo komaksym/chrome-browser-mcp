@@ -183,6 +183,16 @@ function workerIdentityMatches(
   );
 }
 
+/** Returns whether the current job state is a final lifecycle outcome. */
+function isTerminalJob(job: AgentJob): boolean {
+  return job.state === "VERIFIED_DONE" || job.state === "FAILED_TERMINAL" || job.state === "CANCELLED";
+}
+
+/** Returns whether the current job can still advance through collection or scheduling. */
+function isRecoverableJob(job: AgentJob): boolean {
+  return !isTerminalJob(job);
+}
+
 /** Returns the caller-safe summary for a job without exposing its browser tab ID. */
 function publicJob(job: AgentJob) {
   return {
@@ -190,6 +200,8 @@ function publicJob(job: AgentJob) {
     agent_id: job.agentId,
     task_id: job.taskId,
     state: job.state,
+    terminal: isTerminalJob(job),
+    recoverable: isRecoverableJob(job),
     ...(job.error ? { error: job.error } : {}),
     ...(job.diagnostics.recovery_steps.length > 0 || job.diagnostics.uncertainty_reason
       ? { diagnostics: job.diagnostics }
@@ -319,6 +331,10 @@ export class AgentRuntime {
         await this.cancelAndSchedule(run);
       } else {
         await this.retryTransientJobs(run);
+        // A transient spawn/observation failure may have released its slot. Give the
+        // scheduler a chance to re-dispatch it before taking this collection snapshot,
+        // so one collect call can observe the recovered worker immediately.
+        await this.schedule();
         const active = run.jobs.filter(
           (job) => job.state === "DISPATCHED" || job.state === "GENERATING" || job.state === "OBSERVATION_UNCERTAIN",
         );
@@ -380,24 +396,16 @@ export class AgentRuntime {
       results: run.jobs
         .filter((job) => job.state === "VERIFIED_DONE")
         .map((job) => ({
-          job_id: job.jobId,
-          agent_id: job.agentId,
-          task_id: job.taskId,
-          state: job.state,
+          ...publicJob(job),
           result: this.verifiedResult(job),
-          ...(job.diagnostics.recovery_steps.length > 0 ? { diagnostics: job.diagnostics } : {}),
         })),
+      // "failed" is deliberately terminal-only. FAILED_TRANSIENT is an observation
+      // snapshot that the runtime may recover on a later collection.
       failed: run.jobs
-        .filter((job) => job.state === "FAILED_TERMINAL" || job.state === "FAILED_TRANSIENT")
+        .filter((job) => job.state === "FAILED_TERMINAL")
         .map(publicJob),
       pending: run.jobs
-        .filter(
-          (job) =>
-            job.state === "CREATED" ||
-            job.state === "DISPATCHED" ||
-            job.state === "GENERATING" ||
-            job.state === "OBSERVATION_UNCERTAIN",
-        )
+        .filter((job) => isRecoverableJob(job))
         .map(publicJob),
     };
   }
