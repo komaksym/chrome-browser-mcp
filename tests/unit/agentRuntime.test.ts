@@ -33,7 +33,7 @@ describe("AgentRuntime", () => {
  const browser = {
  request: (method: string, args: Record<string, unknown> = {}) => {
 if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99, windowId: 10 } });
- if (method === "new_tab") {
+ if (method === "open_agent_worker_tab") {
  tabOpenCalls += 1;
  if (tabOpenCalls === 1) return Promise.resolve({ tab: { tabId: 1 } });
  const opening = deferred<{ tab: { tabId: number } }>();
@@ -105,7 +105,7 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
  const browser = {
  request: (method: string, args: Record<string, unknown> = {}) => {
 if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99, windowId: 10 } });
- if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
+ if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
  if (method === "chatgpt_worker_submit") {
  submittedPrompt = args.prompt as string;
  return Promise.resolve({ submitted: true });
@@ -142,7 +142,7 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
  const browser = {
  request: (method: string, args: Record<string, unknown> = {}) => {
 if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99, windowId: 10 } });
- if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
+ if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
  if (method === "chatgpt_worker_submit") {
  submittedPrompt = args.prompt as string;
  return Promise.resolve({ submitted: true });
@@ -181,7 +181,7 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
  const browser = {
  request: (method: string, args: Record<string, unknown> = {}) => {
 if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99, windowId: 10 } });
- if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
+ if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
  if (method === "chatgpt_worker_submit") {
  submittedPrompt = args.prompt as string;
  return Promise.resolve({ submitted: true });
@@ -479,20 +479,17 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
  });
  });
 
-  it("opens queued workers in the anchor's current window and follows a moved parent tab", async () => {
-    const windows: number[] = [];
+  it("dispatches queued workers through the stored parent identity", async () => {
+    const anchorIds: number[] = [];
     const submitted = new Map<number, string>();
-    let anchorChecks = 0;
     const browser = {
       request: (method: string, args: Record<string, unknown> = {}) => {
         if (method === "resolve_agent_anchor") {
-          if (args.tabId === undefined) return Promise.resolve({ tab: { tabId: 42, windowId: 1 } });
-          anchorChecks += 1;
-          return Promise.resolve({ tab: { tabId: 42, windowId: anchorChecks === 1 ? 1 : 2 } });
+          return Promise.resolve({ tab: { tabId: 42, windowId: 1 } });
         }
-        if (method === "new_tab") {
-          windows.push(args.windowId as number);
-          return Promise.resolve({ tab: { tabId: windows.length } });
+        if (method === "open_agent_worker_tab") {
+          anchorIds.push(args.anchorTabId as number);
+          return Promise.resolve({ tab: { tabId: anchorIds.length } });
         }
         if (method === "chatgpt_worker_submit") {
           submitted.set(args.tabId as number, args.prompt as string);
@@ -511,23 +508,23 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
     const runtime = new AgentRuntime(browser);
     const spawned = await runtime.spawnAgents([{ agent_id: "one", prompt: "one" }, { agent_id: "two", prompt: "two" }], 1);
     await runtime.collectAgents(spawned.run_id);
-    expect(windows).toEqual([1, 2]);
+    expect(anchorIds).toEqual([42, 42]);
   });
 
-  it("fails queued work when the stored anchor disappears instead of using the focused window", async () => {
+  it("fails queued work when the stored parent becomes unavailable", async () => {
     let opened = 0;
     let submittedPrompt = "";
-    let anchorChecks = 0;
     const browser = {
       request: (method: string, args: Record<string, unknown> = {}) => {
         if (method === "resolve_agent_anchor") {
-          if (args.tabId === undefined) return Promise.resolve({ tab: { tabId: 42, windowId: 1 } });
-          anchorChecks += 1;
-          if (anchorChecks > 1) return Promise.reject(new BrowserError("AGENT_ANCHOR_UNAVAILABLE", "Parent ChatGPT tab is unavailable"));
           return Promise.resolve({ tab: { tabId: 42, windowId: 1 } });
         }
-        if (method === "new_tab") {
+        if (method === "open_agent_worker_tab") {
           opened += 1;
+          if (opened > 1) {
+            return Promise.reject(new BrowserError("AGENT_ANCHOR_UNAVAILABLE", "Parent ChatGPT tab is unavailable"));
+          }
+          expect(args.anchorTabId).toBe(42);
           return Promise.resolve({ tab: { tabId: opened } });
         }
         if (method === "chatgpt_worker_submit") {
@@ -545,8 +542,9 @@ if (method === "resolve_agent_anchor") return Promise.resolve({ tab: { tabId: 99
     const runtime = new AgentRuntime(browser);
     const spawned = await runtime.spawnAgents([{ agent_id: "one", prompt: "one" }, { agent_id: "two", prompt: "two" }], 1);
     const collected = await runtime.collectAgents(spawned.run_id);
-    expect(opened).toBe(1);
+    expect(opened).toBe(2);
     expect(collected.failed).toMatchObject([{ agent_id: "two", error: { code: "AGENT_ANCHOR_UNAVAILABLE", retryable: false } }]);
   });
+
 
 });
