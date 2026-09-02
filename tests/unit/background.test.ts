@@ -161,4 +161,41 @@ describe("extension background worker commands", () => {
  const invalid = await request("resolve_agent_anchor", { tabId: 7 });
  expect(invalid).toMatchObject({ error: { code: "AGENT_ANCHOR_UNAVAILABLE" } });
  });
+
+  it("opens agent workers from the anchor without extending ordinary new_tab placement", async () => {
+    const parent = {
+      id: 7,
+      url: "https://chatgpt.com/c/parent",
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 4,
+      index: 0,
+      status: "complete",
+      lastAccessed: 200,
+    } as chrome.tabs.Tab;
+    tabs.set(7, parent);
+    createTab.mockResolvedValue({
+      ...parent,
+      id: 9,
+      openerTabId: 7,
+      url: "https://chatgpt.com/",
+    });
+
+    const worker = await request("open_agent_worker_tab", { anchorTabId: 7 });
+
+    expect(worker.error).toBeUndefined();
+    expect(createTab).toHaveBeenCalledWith({
+      url: "https://chatgpt.com/",
+      active: false,
+      windowId: 4,
+      openerTabId: 7,
+    });
+
+    createTab.mockClear();
+    await request("new_tab", { url: "https://example.com/", active: false, windowId: 99 });
+    expect(createTab).toHaveBeenCalledWith({ url: "https://example.com/", active: false });
+  });
+
 });
