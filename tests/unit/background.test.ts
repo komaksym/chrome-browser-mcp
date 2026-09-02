@@ -200,6 +200,52 @@ describe("extension background worker commands", () => {
   });
 
 
+  it("retries worker creation in the parent window when the parent moves during creation", async () => {
+    const parent = {
+      id: 7,
+      url: "https://chatgpt.com/c/parent",
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 4,
+      index: 0,
+      status: "complete",
+      lastAccessed: 200,
+    } as chrome.tabs.Tab;
+    tabs.set(7, parent);
+
+    createTab
+      .mockImplementationOnce(() => {
+        tabs.set(7, { ...parent, windowId: 6 });
+        return Promise.reject(new Error("opener tab moved to another window"));
+      })
+      .mockResolvedValueOnce({
+        ...parent,
+        id: 9,
+        windowId: 6,
+        openerTabId: 7,
+        url: "https://chatgpt.com/",
+      });
+
+    const worker = await request("open_agent_worker_tab", { anchorTabId: 7 });
+
+    expect(worker).toMatchObject({ result: { tab: { tabId: 9, windowId: 6 } } });
+    expect(createTab).toHaveBeenNthCalledWith(1, {
+      url: "https://chatgpt.com/",
+      active: false,
+      windowId: 4,
+      openerTabId: 7,
+    });
+    expect(createTab).toHaveBeenNthCalledWith(2, {
+      url: "https://chatgpt.com/",
+      active: false,
+      windowId: 6,
+      openerTabId: 7,
+    });
+  });
+
+
   it("excludes a newly created worker before its tab ID returns to the runtime", async () => {
     const parent = {
       id: 7,
