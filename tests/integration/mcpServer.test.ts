@@ -178,7 +178,7 @@ describe("MCP HTTP server", () => {
     const spawnedContent = spawned.structuredContent as Record<string, unknown>;
     expect(typeof spawnedContent.run_id).toBe("string");
     expect(JSON.stringify(spawned.structuredContent)).not.toMatch(/tab_?id/i);
-    expect(requests.filter((request) => request.method === "new_tab")).toHaveLength(1);
+    expect(requests.filter((request) => request.method === "open_agent_worker_tab")).toHaveLength(1);
 
     const runId = spawnedContent.run_id as string;
     const firstCollect = await client.callTool({
@@ -206,7 +206,7 @@ describe("MCP HTTP server", () => {
     });
     expect(JSON.stringify(firstCollect.structuredContent)).toContain("untrusted");
     expect(JSON.stringify(firstCollect.structuredContent)).not.toMatch(/tab_?id/i);
-    expect(requests.filter((request) => request.method === "new_tab")).toHaveLength(2);
+    expect(requests.filter((request) => request.method === "open_agent_worker_tab")).toHaveLength(2);
 
     const secondCollect = await client.callTool({
       name: "collect_agents",
