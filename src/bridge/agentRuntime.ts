@@ -502,7 +502,7 @@ export class AgentRuntime {
       truncated: Boolean(worker.latestAssistantTruncated) || bounded.truncated,
     };
     job.error = undefined;
-    job.diagnostics.uncertainty_reason = undefined;
+    if (job.diagnostics.recovery_steps.length === 0) job.diagnostics.uncertainty_reason = undefined;
     job.state = "VERIFIED_DONE";
     return true;
   }
