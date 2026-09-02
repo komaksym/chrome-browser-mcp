@@ -6,6 +6,7 @@ export type BrowserMethod =
   | "read_tabs"
   | "search_tabs"
   | "resolve_chatgpt_anchor"
+  | "open_agent_worker_tab"
   | "click"
   | "type"
   | "press_key"

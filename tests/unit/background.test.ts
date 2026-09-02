@@ -41,6 +41,7 @@ const chromeApi = {
     create: vi.fn<() => Promise<chrome.tabs.Tab>>(() => Promise.resolve(undefined as unknown as chrome.tabs.Tab)),
     update: updateTab,
     remove: vi.fn(),
+    onRemoved: { addListener: vi.fn() },
   },
   windows: { update: updateWindow },
   scripting: { executeScript },
@@ -186,7 +187,7 @@ describe("extension background worker commands", () => {
     expect(response).toMatchObject({ error: { code: "ANCHOR_UNAVAILABLE" } });
   });
 
-  it("creates a worker tab in the explicitly requested window", async () => {
+  it("creates a tab in the explicitly requested window", async () => {
     (chromeApi.tabs.create as unknown as { mockResolvedValue: (value: chrome.tabs.Tab) => void }).mockResolvedValue({
       id: 88,
       url: "https://chatgpt.com/",
@@ -205,6 +206,132 @@ describe("extension background worker commands", () => {
       url: "https://chatgpt.com/",
       active: false,
       windowId: 9,
+    });
+  });
+
+  it("opens an agent worker in the stored parent window with the parent as opener", async () => {
+    const parent = {
+      id: 47,
+      url: "https://chatgpt.com/c/parent",
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 9,
+      index: 0,
+    } as chrome.tabs.Tab;
+    tabs.set(47, parent);
+    (chromeApi.tabs.create as unknown as { mockResolvedValue: (value: chrome.tabs.Tab) => void }).mockResolvedValue({
+      ...parent,
+      id: 88,
+      url: "https://chatgpt.com/",
+      openerTabId: 47,
+    });
+
+    const response = await request("open_agent_worker_tab", { anchorTabId: 47 });
+
+    expect(response.error).toBeUndefined();
+    expect(chromeApi.tabs.create).toHaveBeenCalledWith({
+      url: "https://chatgpt.com/",
+      active: false,
+      windowId: 9,
+      openerTabId: 47,
+    });
+  });
+
+  it("never promotes an in-flight or known worker tab to the next run anchor", async () => {
+    const parent = {
+      id: 47,
+      url: "https://chatgpt.com/c/parent",
+      lastAccessed: 100,
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 4,
+      index: 0,
+    } as chrome.tabs.Tab;
+    const worker = {
+      ...parent,
+      id: 88,
+      url: "https://chatgpt.com/",
+      openerTabId: 47,
+      lastAccessed: 300,
+    } as chrome.tabs.Tab;
+    tabs.set(47, parent);
+
+    let signalCreateStarted!: () => void;
+    const createStarted = new Promise<void>((resolve) => {
+      signalCreateStarted = resolve;
+    });
+    let finishCreate!: (tab: chrome.tabs.Tab) => void;
+    vi.mocked(chromeApi.tabs.create).mockImplementation(() => {
+      signalCreateStarted();
+      return new Promise<chrome.tabs.Tab>((resolve) => {
+        finishCreate = resolve;
+      });
+    });
+
+    nativeMessageListener?.({
+      type: "request",
+      id: "pending-worker-open",
+      method: "open_agent_worker_tab",
+      params: { anchorTabId: 47 },
+    });
+    await createStarted;
+
+    vi.mocked(chromeApi.tabs.query).mockResolvedValue([worker, parent]);
+    const whilePending = await request("resolve_chatgpt_anchor", {});
+    expect(whilePending).toMatchObject({ result: { tab: { tabId: 47 } } });
+
+    finishCreate(worker);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await Promise.resolve();
+      if (nativeMessages.some(
+        (message) =>
+          typeof message === "object" &&
+          message !== null &&
+          (message as { id?: string }).id === "pending-worker-open",
+      )) break;
+    }
+
+    const afterCreation = await request("resolve_chatgpt_anchor", {});
+    expect(afterCreation).toMatchObject({ result: { tab: { tabId: 47 } } });
+  });
+
+  it("retries worker creation when the parent moves windows during creation", async () => {
+    const parent = {
+      id: 47,
+      url: "https://chatgpt.com/c/parent",
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 4,
+      index: 0,
+    } as chrome.tabs.Tab;
+    tabs.set(47, parent);
+    vi.mocked(chromeApi.tabs.create)
+      .mockImplementationOnce(async () => {
+        tabs.set(47, { ...parent, windowId: 6 });
+        throw new Error("opener tab moved");
+      })
+      .mockResolvedValueOnce({ ...parent, id: 88, windowId: 6, openerTabId: 47 } as chrome.tabs.Tab);
+
+    const response = await request("open_agent_worker_tab", { anchorTabId: 47 });
+
+    expect(response).toMatchObject({ result: { tab: { tabId: 88, windowId: 6 } } });
+    expect(chromeApi.tabs.create).toHaveBeenNthCalledWith(1, {
+      url: "https://chatgpt.com/",
+      active: false,
+      windowId: 4,
+      openerTabId: 47,
+    });
+    expect(chromeApi.tabs.create).toHaveBeenNthCalledWith(2, {
+      url: "https://chatgpt.com/",
+      active: false,
+      windowId: 6,
+      openerTabId: 47,
     });
   });
 
