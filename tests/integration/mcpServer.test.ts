@@ -75,6 +75,7 @@ describe("MCP HTTP server", () => {
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         requests.push({ method, args });
         if (method === "new_tab") {
           const tabId = nextTabId++;
@@ -202,6 +203,7 @@ describe("MCP HTTP server", () => {
     const transientBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         if (method === "new_tab") return Promise.resolve({ tab: { tabId: 91 } });
         if (method === "chatgpt_worker_submit") {
           transientAttempts += 1;
@@ -230,6 +232,7 @@ describe("MCP HTTP server", () => {
     const terminalBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         if (method === "new_tab") return Promise.resolve({ tab: { tabId: 92 } });
         if (method === "chatgpt_worker_submit") {
           terminalAttempts += 1;
@@ -269,6 +272,7 @@ describe("MCP HTTP server", () => {
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         if (method === "new_tab") {
           openedTabs += 1;
           return Promise.resolve({ tab: { tabId: nextTabId++ } });
@@ -340,6 +344,7 @@ describe("MCP HTTP server", () => {
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         if (method === "new_tab") return Promise.resolve({ tab: { tabId: 111 } });
         if (method === "chatgpt_worker_submit") {
           submittedPrompt = args.prompt as string;
@@ -389,6 +394,7 @@ describe("MCP HTTP server", () => {
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         if (method === "new_tab") return Promise.resolve({ tab: { tabId: nextTabId++ } });
         if (method === "chatgpt_worker_submit") {
           submitted.set(args.tabId as number, args.prompt as string);
@@ -459,6 +465,7 @@ describe("MCP HTTP server", () => {
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         if (method === "new_tab") return Promise.resolve({ tab: { tabId: 121 } });
         if (method === "chatgpt_worker_submit") {
           submitCalls += 1;
@@ -502,6 +509,7 @@ describe("MCP HTTP server", () => {
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         if (method === "new_tab") return Promise.resolve({ tab: { tabId: 131 } });
         if (method === "chatgpt_worker_submit") {
           submitCalls += 1;
@@ -542,6 +550,7 @@ describe("MCP HTTP server", () => {
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
       request: (method: string, args: Record<string, unknown> = {}) => {
+      if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         requests.push({ method, args });
         if (method === "new_tab") return Promise.resolve({ tab: { tabId: 701 } });
         if (method === "chatgpt_worker_submit") {
