@@ -290,6 +290,14 @@ async function listTabs(windowId) {
   const tabs = await chrome.tabs.query(windowId === void 0 ? {} : { windowId });
   return tabs.filter((tab) => !tab.incognito).map(serializeTab);
 }
+async function getValidatedWorkerTab(tabId, allowNonWorker = false) {
+  const tab = await chrome.tabs.get(tabId);
+  assertReadableTab(tab);
+  if (!allowNonWorker && new URL(resolveTabUrl(tab)).hostname !== "chatgpt.com") {
+    throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
+  }
+  return tab;
+}
 async function readTab(tabId, offset, maxCharacters, includeLinks) {
   const tab = await chrome.tabs.get(tabId);
   assertReadableTab(tab);
@@ -311,12 +319,7 @@ async function readTab(tabId, offset, maxCharacters, includeLinks) {
   };
 }
 async function runChatGptWorker(tabId, command) {
-  const tab = await chrome.tabs.get(tabId);
-  assertReadableTab(tab);
-  const url = resolveTabUrl(tab);
-  if (new URL(url).hostname !== "chatgpt.com") {
-    throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
-  }
+  const tab = await getValidatedWorkerTab(tabId);
   if (!tab.url || tab.status === "loading") {
     throw new Error("NAVIGATION_IN_PROGRESS: ChatGPT worker tab is still navigating");
   }
@@ -331,22 +334,14 @@ async function runChatGptWorker(tabId, command) {
   return { ...result, tab: serializeTab(tab) };
 }
 async function activateWorkerTab(tabId, allowNonWorker = false) {
-  const tab = await chrome.tabs.get(tabId);
-  assertReadableTab(tab);
-  if (!allowNonWorker && new URL(resolveTabUrl(tab)).hostname !== "chatgpt.com") {
-    throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
-  }
+  const tab = await getValidatedWorkerTab(tabId, allowNonWorker);
   await chrome.windows.update(tab.windowId, { focused: true });
   const updated = await chrome.tabs.update(tabId, { active: true });
   if (!updated) throw new Error("TAB_NOT_FOUND: Could not activate worker tab");
   return { tab: serializeTab(updated) };
 }
 async function reloadWorkerTab(tabId) {
-  const tab = await chrome.tabs.get(tabId);
-  assertReadableTab(tab);
-  if (new URL(resolveTabUrl(tab)).hostname !== "chatgpt.com") {
-    throw new Error("CHATGPT_UNSUPPORTED_PAGE: worker operations require chatgpt.com");
-  }
+  await getValidatedWorkerTab(tabId);
   await chrome.tabs.reload(tabId);
   return { tab: serializeTab(await chrome.tabs.get(tabId)) };
 }

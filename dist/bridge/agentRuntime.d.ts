@@ -136,6 +136,10 @@ export declare class AgentRuntime {
     private acceptObservation;
     /** Reads the same worker turn with bounded backoff and never submits another prompt. */
     private rereadWithBackoff;
+    /** Records one recovery-step failure without replacing the recovery contract's terminal error. */
+    private recordRecoveryFailure;
+    /** Runs one recovery step without allowing its error to escape into generic job failure handling. */
+    private recoveryAttempt;
     /** Restores the previously active normal tab after activation-based worker recovery when possible. */
     private restoreActiveTab;
     /** Runs the bounded observation-only recovery ladder for a finished turn whose marker was not observed. */
