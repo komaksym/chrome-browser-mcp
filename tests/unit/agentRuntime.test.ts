@@ -255,6 +255,7 @@ describe("AgentRuntime", () => {
  diagnostics: {
  observation_source: "backoff_reread",
  recovery_steps: ["current_state", "bounded_reread"],
+ uncertainty_reason: "completion marker missing after generation appeared finished",
  },
  }],
  });
