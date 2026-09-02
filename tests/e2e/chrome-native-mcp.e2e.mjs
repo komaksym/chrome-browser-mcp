@@ -225,6 +225,83 @@ ${verifier.stderr}`);
   assert.equal(searched.structuredContent.count, 1);
   assert.equal(searched.structuredContent.tabs[0].title, "Second test tab");
 
+  await context.route("https://chatgpt.com/**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html; charset=utf-8",
+      body: `<!doctype html><html><body>
+        <textarea id="prompt-textarea"></textarea>
+        <button data-testid="send-button">Send</button>
+      </body></html>`,
+    });
+  });
+  const parentChatGptUrl = "https://chatgpt.com/c/e2e-parent";
+  const parentChatGpt = await context.newPage();
+  await parentChatGpt.goto(parentChatGptUrl);
+  await parentChatGpt.bringToFront();
+
+  const browserCdp = await browser.newBrowserCDPSession();
+  const parentTargets = await browserCdp.send("Target.getTargets");
+  const parentTarget = parentTargets.targetInfos.find(
+    (target) => target.type === "page" && target.url === parentChatGptUrl,
+  );
+  assert.ok(parentTarget, `Expected parent ChatGPT target, got ${JSON.stringify(parentTargets.targetInfos)}`);
+  const parentWindow = await browserCdp.send("Browser.getWindowForTarget", { targetId: parentTarget.targetId });
+
+  const workUrl = `http://127.0.0.1:${pagePort}/two?work-window=1`;
+  const workTarget = await browserCdp.send("Target.createTarget", {
+    url: workUrl,
+    newWindow: true,
+    focus: true,
+  });
+  const workWindow = await browserCdp.send("Browser.getWindowForTarget", { targetId: workTarget.targetId });
+  assert.notEqual(workWindow.windowId, parentWindow.windowId, "Expected a distinct focused work window");
+
+  const spawnedAgent = await client.callTool({
+    name: "spawn_agents",
+    arguments: {
+      tasks: [{ agent_id: "window-placement", prompt: "confirm placement" }],
+      max_concurrency: 1,
+    },
+  });
+  assert.equal(spawnedAgent.isError, undefined, JSON.stringify(spawnedAgent));
+  const placementRunId = spawnedAgent.structuredContent.run_id;
+  assert.equal(typeof placementRunId, "string");
+
+  let workerTarget;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const targets = await browserCdp.send("Target.getTargets");
+    workerTarget = targets.targetInfos.find(
+      (target) =>
+        target.type === "page" &&
+        target.targetId !== parentTarget.targetId &&
+        target.url === "https://chatgpt.com/",
+    );
+    if (workerTarget) break;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  assert.ok(workerTarget, "Expected a spawned ChatGPT worker target");
+  const workerWindow = await browserCdp.send("Browser.getWindowForTarget", { targetId: workerTarget.targetId });
+  assert.equal(
+    workerWindow.windowId,
+    parentWindow.windowId,
+    "Spawned worker must stay in the parent ChatGPT window",
+  );
+  assert.notEqual(
+    workerWindow.windowId,
+    workWindow.windowId,
+    "Focused non-ChatGPT window must not capture agent workers",
+  );
+
+  const cancelledPlacement = await client.callTool({
+    name: "cancel_agents",
+    arguments: { run_id: placementRunId },
+  });
+  assert.equal(cancelledPlacement.isError, undefined, JSON.stringify(cancelledPlacement));
+  await browserCdp.send("Target.closeTarget", { targetId: workTarget.targetId });
+  await parentChatGpt.close();
+  await browserCdp.detach();
+
   process.stdout.write("E2E PASS: MCP client -> native host -> Chrome extension -> live tabs\n");
 } catch (error) {
   testFailure = error;
