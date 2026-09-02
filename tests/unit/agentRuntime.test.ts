@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AgentRuntime } from "../../src/bridge/agentRuntime.js";
 import { BrowserError, type BrowserClient } from "../../src/bridge/browserClient.js";
+import { createRecoveryBrowser } from "./recoveryBrowserFixture.js";
 
 interface Deferred<Value> {
  promise: Promise<Value>;
@@ -227,42 +228,25 @@ describe("AgentRuntime", () => {
  });
 
  it("recovers a later read of the same finished turn with exactly one submission", async () => {
- let submittedPrompt = "";
- let submissions = 0;
- let reads = 0;
- const browser = {
- request: (method: string, args: Record<string, unknown> = {}) => {
- if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
- if (method === "chatgpt_worker_submit") {
- submissions += 1;
- submittedPrompt = args.prompt as string;
- return Promise.resolve({ submitted: true });
- }
- if (method === "read_chatgpt_worker") {
- reads += 1;
- return Promise.resolve({
+ const { browser, state } = createRecoveryBrowser({
+ read: (current) => Promise.resolve({
  ready: true,
  generating: false,
- latestUserText: submittedPrompt,
+ latestUserText: current.submittedPrompt,
  latestAssistantText:
- reads === 1 ? "Finished but first observation missed marker" : `Recovered result\n${completionMarker(submittedPrompt)}`,
+ current.reads === 1
+ ? "Finished but first observation missed marker"
+ : `Recovered result\n${completionMarker(current.submittedPrompt)}`,
  latestAssistantTruncated: false,
  tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
+ }),
  });
- }
- if (method === "get_active_tab") return Promise.resolve({ tab: { tabId: 99 } });
- if (method === "activate_worker_tab") return Promise.resolve({});
- if (method === "reload_worker_tab") return Promise.resolve({});
- if (method === "close_tab") return Promise.resolve({ closed: true });
- return Promise.resolve({});
- },
- } as BrowserClient;
  const runtime = new AgentRuntime(browser);
  const spawned = await runtime.spawnAgents([{ agent_id: "recover", prompt: "answer once" }], 1);
 
  const collected = await runtime.collectAgents(spawned.run_id);
 
- expect(submissions).toBe(1);
+ expect(state.submissions).toBe(1);
  expect(collected).toMatchObject({
  state: "COMPLETE",
  results: [{ agent_id: "recover", result: { text: "Recovered result" } }],
@@ -270,135 +254,77 @@ describe("AgentRuntime", () => {
  });
 
  it("activates a background worker to recover without another submission and restores the prior tab", async () => {
- let submittedPrompt = "";
- let submissions = 0;
- let reads = 0;
- const activations: number[] = [];
- const browser = {
- request: (method: string, args: Record<string, unknown> = {}) => {
- if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
- if (method === "chatgpt_worker_submit") {
- submissions += 1;
- submittedPrompt = args.prompt as string;
- return Promise.resolve({ submitted: true });
- }
- if (method === "read_chatgpt_worker") {
- reads += 1;
- const recovered = reads >= 5;
+ const { browser, state } = createRecoveryBrowser({
+ read: (current) => {
+ const recovered = current.reads >= 5;
  return Promise.resolve({
  ready: true,
  generating: false,
- latestUserText: submittedPrompt,
- latestAssistantText: recovered ? `Activated result\n${completionMarker(submittedPrompt)}` : "marker unavailable in background",
+ latestUserText: current.submittedPrompt,
+ latestAssistantText: recovered
+ ? `Activated result\n${completionMarker(current.submittedPrompt)}`
+ : "marker unavailable in background",
  latestAssistantTruncated: false,
  tab: { tabId: 1, windowId: 10, active: recovered, discarded: false, status: "complete" },
  });
- }
- if (method === "get_active_tab") return Promise.resolve({ tab: { tabId: 99 } });
- if (method === "activate_worker_tab") {
- activations.push(args.tabId as number);
- return Promise.resolve({});
- }
- if (method === "reload_worker_tab") throw new Error("reload should not be needed");
- if (method === "close_tab") return Promise.resolve({ closed: true });
- return Promise.resolve({});
  },
- } as BrowserClient;
+ reload: () => {
+ throw new Error("reload should not be needed");
+ },
+ });
  const runtime = new AgentRuntime(browser);
  const spawned = await runtime.spawnAgents([{ agent_id: "activate", prompt: "answer once" }], 1);
 
  const collected = await runtime.collectAgents(spawned.run_id);
 
- expect(submissions).toBe(1);
- expect(activations).toEqual([1, 99]);
+ expect(state.submissions).toBe(1);
+ expect(state.activations).toEqual([1, 99]);
  expect(collected.state).toBe("COMPLETE");
  });
 
  it("reloads only a definitely finished worker and recovers without resubmission", async () => {
- let submittedPrompt = "";
- let submissions = 0;
- let reads = 0;
- let reloads = 0;
- const browser = {
- request: (method: string, args: Record<string, unknown> = {}) => {
- if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
- if (method === "chatgpt_worker_submit") {
- submissions += 1;
- submittedPrompt = args.prompt as string;
- return Promise.resolve({ submitted: true });
- }
- if (method === "read_chatgpt_worker") {
- reads += 1;
- return Promise.resolve({
+ const { browser, state } = createRecoveryBrowser({
+ read: (current) => Promise.resolve({
  ready: true,
  generating: false,
- latestUserText: submittedPrompt,
+ latestUserText: current.submittedPrompt,
  latestAssistantText:
- reloads > 0 ? `Reloaded result\n${completionMarker(submittedPrompt)}` : "finished marker not visible",
+ current.reloads > 0
+ ? `Reloaded result\n${completionMarker(current.submittedPrompt)}`
+ : "finished marker not visible",
  latestAssistantTruncated: false,
  tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
+ }),
  });
- }
- if (method === "get_active_tab") return Promise.resolve({ tab: { tabId: 99 } });
- if (method === "activate_worker_tab") return Promise.resolve({});
- if (method === "reload_worker_tab") {
- reloads += 1;
- return Promise.resolve({});
- }
- if (method === "close_tab") return Promise.resolve({ closed: true });
- return Promise.resolve({});
- },
- } as BrowserClient;
  const runtime = new AgentRuntime(browser);
  const spawned = await runtime.spawnAgents([{ agent_id: "reload", prompt: "answer once" }], 1);
 
  const collected = await runtime.collectAgents(spawned.run_id);
 
- expect(submissions).toBe(1);
- expect(reloads).toBe(1);
- expect(reads).toBeGreaterThan(1);
+ expect(state.submissions).toBe(1);
+ expect(state.reloads).toBe(1);
+ expect(state.reads).toBeGreaterThan(1);
  expect(collected.state).toBe("COMPLETE");
  });
 
  it("surfaces recovery exhaustion explicitly without regeneration", async () => {
- let submittedPrompt = "";
- let submissions = 0;
- let reloads = 0;
- const browser = {
- request: (method: string, args: Record<string, unknown> = {}) => {
- if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
- if (method === "chatgpt_worker_submit") {
- submissions += 1;
- submittedPrompt = args.prompt as string;
- return Promise.resolve({ submitted: true });
- }
- if (method === "read_chatgpt_worker") {
- return Promise.resolve({
+ const { browser, state } = createRecoveryBrowser({
+ read: (current) => Promise.resolve({
  ready: true,
  generating: false,
- latestUserText: submittedPrompt,
+ latestUserText: current.submittedPrompt,
  latestAssistantText: "finished marker never observable",
  latestAssistantTruncated: false,
  tab: { tabId: 1, windowId: 10, active: false, discarded: true, status: "complete" },
+ }),
  });
- }
- if (method === "get_active_tab") return Promise.resolve({ tab: { tabId: 99 } });
- if (method === "activate_worker_tab") return Promise.resolve({});
- if (method === "reload_worker_tab") {
- reloads += 1;
- return Promise.resolve({});
- }
- if (method === "close_tab") return Promise.resolve({ closed: true });
- return Promise.resolve({});
- },
- } as BrowserClient;
  const runtime = new AgentRuntime(browser);
  const spawned = await runtime.spawnAgents([{ agent_id: "exhaust", prompt: "answer once" }], 1);
 
  const collected = await runtime.collectAgents(spawned.run_id);
 
- expect(submissions).toBe(1);
- expect(reloads).toBe(1);
+ expect(state.submissions).toBe(1);
+ expect(state.reloads).toBe(1);
  expect(collected).toMatchObject({
  state: "FAILED",
  failed: [{
@@ -415,71 +341,42 @@ describe("AgentRuntime", () => {
  });
 
  it("does not reload while the worker is still generating", async () => {
- let submittedPrompt = "";
- let reloads = 0;
- const browser = {
- request: (method: string, args: Record<string, unknown> = {}) => {
- if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
- if (method === "chatgpt_worker_submit") {
- submittedPrompt = args.prompt as string;
- return Promise.resolve({ submitted: true });
- }
- if (method === "read_chatgpt_worker") {
- return Promise.resolve({
+ const { browser, state } = createRecoveryBrowser({
+ read: (current) => Promise.resolve({
  ready: true,
  generating: true,
- latestUserText: submittedPrompt,
+ latestUserText: current.submittedPrompt,
  latestAssistantText: "partial",
  latestAssistantTruncated: false,
+ }),
  });
- }
- if (method === "reload_worker_tab") {
- reloads += 1;
- return Promise.resolve({});
- }
- return Promise.resolve({});
- },
- } as BrowserClient;
  const runtime = new AgentRuntime(browser);
  const spawned = await runtime.spawnAgents([{ agent_id: "generating", prompt: "keep going" }], 1);
 
  const collected = await runtime.collectAgents(spawned.run_id);
 
- expect(reloads).toBe(0);
+ expect(state.reloads).toBe(0);
  expect(collected.pending).toMatchObject([{ agent_id: "generating", state: "GENERATING" }]);
  });
 
-
  it("keeps proof of finished generation across weaker recovery observations", async () => {
- let submittedPrompt = "";
- let submissions = 0;
- let reads = 0;
- let reloads = 0;
- const browser = {
- request: (method: string, args: Record<string, unknown> = {}) => {
- if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
- if (method === "chatgpt_worker_submit") {
- submissions += 1;
- submittedPrompt = args.prompt as string;
- return Promise.resolve({ submitted: true });
- }
- if (method === "read_chatgpt_worker") {
- reads += 1;
- if (reloads > 0) {
+ const { browser, state } = createRecoveryBrowser({
+ read: (current) => {
+ if (current.reloads > 0) {
  return Promise.resolve({
  ready: true,
  generating: false,
- latestUserText: submittedPrompt,
- latestAssistantText: `Recovered after stale reads\n${completionMarker(submittedPrompt)}`,
+ latestUserText: current.submittedPrompt,
+ latestAssistantText: `Recovered after stale reads\n${completionMarker(current.submittedPrompt)}`,
  latestAssistantTruncated: false,
  tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
  });
  }
- if (reads === 1) {
+ if (current.reads === 1) {
  return Promise.resolve({
  ready: true,
  generating: false,
- latestUserText: submittedPrompt,
+ latestUserText: current.submittedPrompt,
  latestAssistantText: "finished marker not visible",
  latestAssistantTruncated: false,
  tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
@@ -488,29 +385,20 @@ describe("AgentRuntime", () => {
  return Promise.resolve({
  ready: true,
  generating: true,
- latestUserText: submittedPrompt,
+ latestUserText: current.submittedPrompt,
  latestAssistantText: null,
  latestAssistantTruncated: false,
  tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "loading" },
  });
- }
- if (method === "get_active_tab") return Promise.resolve({ tab: { tabId: 99 } });
- if (method === "activate_worker_tab") return Promise.resolve({});
- if (method === "reload_worker_tab") {
- reloads += 1;
- return Promise.resolve({});
- }
- if (method === "close_tab") return Promise.resolve({ closed: true });
- return Promise.resolve({});
  },
- } as BrowserClient;
+ });
  const runtime = new AgentRuntime(browser);
  const spawned = await runtime.spawnAgents([{ agent_id: "monotonic", prompt: "answer once" }], 1);
 
  const collected = await runtime.collectAgents(spawned.run_id);
 
- expect(submissions).toBe(1);
- expect(reloads).toBe(1);
+ expect(state.submissions).toBe(1);
+ expect(state.reloads).toBe(1);
  expect(collected).toMatchObject({
  state: "COMPLETE",
  results: [{ agent_id: "monotonic", result: { text: "Recovered after stale reads" } }],
@@ -518,47 +406,27 @@ describe("AgentRuntime", () => {
  });
 
  it("continues recovery after activation failure and surfaces recovery exhaustion", async () => {
- let submittedPrompt = "";
- let submissions = 0;
- let reloads = 0;
- const browser = {
- request: (method: string, args: Record<string, unknown> = {}) => {
- if (method === "new_tab") return Promise.resolve({ tab: { tabId: 1 } });
- if (method === "chatgpt_worker_submit") {
- submissions += 1;
- submittedPrompt = args.prompt as string;
- return Promise.resolve({ submitted: true });
- }
- if (method === "read_chatgpt_worker") {
- return Promise.resolve({
+ const { browser, state } = createRecoveryBrowser({
+ read: (current) => Promise.resolve({
  ready: true,
  generating: false,
- latestUserText: submittedPrompt,
+ latestUserText: current.submittedPrompt,
  latestAssistantText: "finished marker never observable",
  latestAssistantTruncated: false,
  tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
- });
- }
- if (method === "get_active_tab") return Promise.resolve({ tab: { tabId: 99 } });
- if (method === "activate_worker_tab" && args.tabId === 1) {
- throw new Error("ACTIVATION_FAILED: worker activation failed");
- }
- if (method === "activate_worker_tab") return Promise.resolve({});
- if (method === "reload_worker_tab") {
- reloads += 1;
- return Promise.resolve({});
- }
- if (method === "close_tab") return Promise.resolve({ closed: true });
+ }),
+ activate: (tabId) => {
+ if (tabId === 1) throw new Error("ACTIVATION_FAILED: worker activation failed");
  return Promise.resolve({});
  },
- } as BrowserClient;
+ });
  const runtime = new AgentRuntime(browser);
  const spawned = await runtime.spawnAgents([{ agent_id: "activation-error", prompt: "answer once" }], 1);
 
  const collected = await runtime.collectAgents(spawned.run_id);
 
- expect(submissions).toBe(1);
- expect(reloads).toBe(1);
+ expect(state.submissions).toBe(1);
+ expect(state.reloads).toBe(1);
  expect(collected).toMatchObject({
  state: "FAILED",
  failed: [{
