@@ -249,7 +249,14 @@ describe("AgentRuntime", () => {
  expect(state.submissions).toBe(1);
  expect(collected).toMatchObject({
  state: "COMPLETE",
- results: [{ agent_id: "recover", result: { text: "Recovered result" } }],
+ results: [{
+ agent_id: "recover",
+ result: { text: "Recovered result" },
+ diagnostics: {
+ observation_source: "backoff_reread",
+ recovery_steps: ["current_state", "bounded_reread"],
+ },
+ }],
  });
  });
 
@@ -359,19 +366,9 @@ describe("AgentRuntime", () => {
  expect(collected.pending).toMatchObject([{ agent_id: "generating", state: "GENERATING" }]);
  });
 
- it("keeps proof of finished generation across weaker recovery observations", async () => {
+ it("preserves finished evidence without reloading after newer generating observations", async () => {
  const { browser, state } = createRecoveryBrowser({
  read: (current) => {
- if (current.reloads > 0) {
- return Promise.resolve({
- ready: true,
- generating: false,
- latestUserText: current.submittedPrompt,
- latestAssistantText: `Recovered after stale reads\n${completionMarker(current.submittedPrompt)}`,
- latestAssistantTruncated: false,
- tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
- });
- }
  if (current.reads === 1) {
  return Promise.resolve({
  ready: true,
@@ -398,10 +395,44 @@ describe("AgentRuntime", () => {
  const collected = await runtime.collectAgents(spawned.run_id);
 
  expect(state.submissions).toBe(1);
- expect(state.reloads).toBe(1);
+ expect(state.reloads).toBe(0);
  expect(collected).toMatchObject({
- state: "COMPLETE",
- results: [{ agent_id: "monotonic", result: { text: "Recovered after stale reads" } }],
+ state: "FAILED",
+ failed: [{
+ agent_id: "monotonic",
+ error: { code: "RECOVERY_EXHAUSTED" },
+ diagnostics: {
+ observation_state: { generating: true },
+ recovery_steps: ["current_state", "bounded_reread", "activate_worker_tab"],
+ },
+ }],
+ });
+ });
+
+ it("does not mask worker identity mismatch as recovery exhaustion", async () => {
+ const { browser, state } = createRecoveryBrowser({
+ read: (current) => Promise.resolve({
+ ready: true,
+ generating: false,
+ latestUserText: current.reads === 1 ? current.submittedPrompt : "different worker turn",
+ latestAssistantText: "finished marker never observable",
+ latestAssistantTruncated: false,
+ tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
+ }),
+ });
+ const runtime = new AgentRuntime(browser);
+ const spawned = await runtime.spawnAgents([{ agent_id: "identity", prompt: "answer once" }], 1);
+
+ const collected = await runtime.collectAgents(spawned.run_id);
+
+ expect(state.submissions).toBe(1);
+ expect(state.reloads).toBe(0);
+ expect(collected).toMatchObject({
+ state: "FAILED",
+ failed: [{
+ agent_id: "identity",
+ error: { code: "WORKER_IDENTITY_MISMATCH", retryable: false },
+ }],
  });
  });
 
