@@ -399,7 +399,7 @@ export function createBrowserMcpServer(browser: BrowserClient, agentRuntime = ne
  description: "Open an absolute HTTP(S) URL in a new normal tab.",
  inputSchema: {
  url: z.string().url().max(20_000),
- active: z.boolean().default(true),
+ active: z.boolean().default(false),
  },
  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
  },
