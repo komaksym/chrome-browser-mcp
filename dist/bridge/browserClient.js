@@ -93,6 +93,7 @@ export class BrowserClient {
     timeoutMs;
     pending = new Map();
     chatGptWorkerSnapshots = new Map();
+    lifecycleListeners = new Set();
     ready = false;
     extensionVersion = null;
     extensionId = null;
@@ -107,6 +108,11 @@ export class BrowserClient {
     /** Returns the extension connection state advertised by the latest ready message. */
     status() {
         return { connected: this.ready, extensionVersion: this.extensionVersion, extensionId: this.extensionId };
+    }
+    /** Subscribes to validated unsolicited worker snapshots and browser ready/reconnect notifications. */
+    subscribeLifecycle(listener) {
+        this.lifecycleListeners.add(listener);
+        return () => this.lifecycleListeners.delete(listener);
     }
     /** Returns the latest validated ephemeral ChatGPT worker snapshot for one tab. */
     latestChatGptWorkerSnapshot(tabId) {
@@ -150,10 +156,17 @@ export class BrowserClient {
             this.ready = true;
             this.extensionVersion = message.extensionVersion;
             this.extensionId = message.extensionId;
+            this.emitLifecycle({
+                type: "ready",
+                extensionVersion: message.extensionVersion,
+                extensionId: message.extensionId,
+            });
             return;
         }
         if (message.type === "event") {
-            this.cacheChatGptWorkerSnapshot(message);
+            const event = this.cacheChatGptWorkerSnapshot(message);
+            if (event)
+                this.emitLifecycle(event);
             return;
         }
         if (message.type !== "response" || typeof message.id !== "string")
@@ -170,21 +183,37 @@ export class BrowserClient {
             pending.resolve(message.result);
         }
     }
-    /** Caches one newer bounded snapshot without letting current-turn completion evidence regress. */
+    /** Caches one newer bounded snapshot and returns lifecycle evidence without regressing current-turn completion. */
     cacheChatGptWorkerSnapshot(message) {
         if (message.type !== "event" ||
             message.event !== "chatgpt_worker_snapshot" ||
             !Number.isSafeInteger(message.tabId) ||
             message.tabId <= 0) {
-            return;
+            return undefined;
         }
         const snapshot = validChatGptWorkerSnapshot(message.snapshot);
         if (!snapshot)
-            return;
+            return undefined;
         const current = this.chatGptWorkerSnapshots.get(message.tabId);
         if (current && snapshot.revision <= current.revision)
-            return;
-        this.chatGptWorkerSnapshots.set(message.tabId, current ? preserveCompletedWorkerEvidence(current, snapshot) : snapshot);
+            return undefined;
+        const cached = current ? preserveCompletedWorkerEvidence(current, snapshot) : snapshot;
+        this.chatGptWorkerSnapshots.set(message.tabId, cached);
+        return { type: "chatgpt_worker_snapshot", tabId: message.tabId, snapshot: { ...cached } };
+    }
+    /** Delivers one lifecycle event without allowing observers to mutate cached evidence or disrupt parsing. */
+    emitLifecycle(event) {
+        for (const listener of this.lifecycleListeners) {
+            const delivered = event.type === "chatgpt_worker_snapshot"
+                ? { ...event, snapshot: { ...event.snapshot } }
+                : { ...event };
+            try {
+                listener(delivered);
+            }
+            catch {
+                // A lifecycle observer cannot be allowed to disrupt Native Messaging protocol handling.
+            }
+        }
     }
     /** Rejects all pending requests after the Native Messaging transport becomes unusable. */
     failAll(error) {

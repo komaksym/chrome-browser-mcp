@@ -110,6 +110,9 @@ export class AgentRuntime {
             throw new Error("INVALID_MAX_ACTIVE_WORKERS: active-worker ceiling must be a positive integer");
         }
         this.maxActiveWorkers = maxActiveWorkers;
+        if (typeof this.browser.subscribeLifecycle === "function") {
+            this.browser.subscribeLifecycle((event) => this.handleBrowserLifecycleEvent(event));
+        }
     }
     /** Creates or replays one run for a stable request identity. */
     async spawnAgents(tasks, maxConcurrency, requestId = `legacy_${randomUUID()}`) {
@@ -180,6 +183,34 @@ export class AgentRuntime {
     /** Returns whether a tab is owned by any live runtime job and must stay private from generic tools. */
     isWorkerTab(tabId) {
         return [...this.runs.values()].some((run) => run.jobs.some((job) => job.tabId === tabId));
+    }
+    /** Finds the runtime-owned job currently associated with one private worker tab. */
+    jobForWorkerTab(tabId) {
+        for (const run of this.runs.values()) {
+            const job = run.jobs.find((candidate) => candidate.tabId === tabId);
+            if (job)
+                return { run, job };
+        }
+        return undefined;
+    }
+    /** Serializes one validated unsolicited snapshot through the same verification path as collection. */
+    handleBrowserLifecycleEvent(event) {
+        if (event.type !== "chatgpt_worker_snapshot")
+            return;
+        const owner = this.jobForWorkerTab(event.tabId);
+        if (!owner)
+            return;
+        const { run, job } = owner;
+        void this.enqueueRunOperation(run, async () => {
+            if (job.tabId !== event.tabId)
+                return;
+            const attempt = this.currentDispatchAttempt(run, job);
+            if (!attempt || !this.acceptFreshSnapshot(job, event.snapshot))
+                return;
+            const outcome = this.acceptWorkerSnapshot(attempt, event.snapshot);
+            if (outcome === "accepted")
+                await this.schedule();
+        });
     }
     /** Advances one run atomically, returning only marker-validated worker results. */
     async collectAgents(runId) {

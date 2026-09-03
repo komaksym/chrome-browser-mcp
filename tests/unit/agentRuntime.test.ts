@@ -963,4 +963,193 @@ describe("AgentRuntime", () => {
     });
   });
 
+
+  it("releases capacity only for a fresh verified lifecycle snapshot and dispatches queued work without collection", async () => {
+    type SnapshotEvent = {
+      type: "chatgpt_worker_snapshot";
+      tabId: number;
+      snapshot: {
+        ready: boolean;
+        generating: boolean;
+        latestUserText: string | null;
+        latestUserTruncated: boolean;
+        latestAssistantText: string | null;
+        latestAssistantTruncated: boolean;
+        revision: number;
+        timestamp: number;
+      };
+    };
+    type LifecycleEvent = SnapshotEvent | { type: "ready"; extensionVersion: string; extensionId: string };
+
+    let lifecycleListener: ((event: LifecycleEvent) => void) | undefined;
+    const submitted = new Map<number, { prompt: string; timestamp: number }>();
+    const secondSubmitted = deferred<void>();
+    const thirdSubmitted = deferred<void>();
+    let nextTabId = 1;
+    const browser = {
+      subscribeLifecycle: (listener: (event: LifecycleEvent) => void) => {
+        lifecycleListener = listener;
+        return () => {
+          if (lifecycleListener === listener) lifecycleListener = undefined;
+        };
+      },
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") {
+          return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        }
+        if (method === "open_agent_worker_tab") {
+          return Promise.resolve({ tab: { tabId: nextTabId++ } });
+        }
+        if (method === "chatgpt_worker_submit") {
+          const tabId = args.tabId as number;
+          const timestamp = Date.now();
+          submitted.set(tabId, { prompt: args.prompt as string, timestamp });
+          if (tabId === 2) secondSubmitted.resolve();
+          if (tabId === 3) thirdSubmitted.resolve();
+          return Promise.resolve({ submitted: true, snapshot: { revision: 1, timestamp } });
+        }
+        if (method === "read_chatgpt_worker") {
+          const current = submitted.get(args.tabId as number);
+          if (!current) throw new Error("missing submitted worker");
+          return Promise.resolve({
+            ready: true,
+            generating: true,
+            latestUserText: current.prompt,
+            latestUserTruncated: false,
+            latestAssistantText: null,
+            latestAssistantTruncated: false,
+          });
+        }
+        return Promise.resolve({});
+      },
+      latestChatGptWorkerSnapshot: () => undefined,
+      forgetChatGptWorkerSnapshot: () => undefined,
+    } as unknown as BrowserClient;
+    const runtime = new AgentRuntime(browser, { maxActiveWorkers: 1 });
+
+    expect(lifecycleListener).toBeTypeOf("function");
+    const spawned = await runtime.spawnAgents(
+      [
+        { agent_id: "first", prompt: "first" },
+        { agent_id: "second", prompt: "second" },
+        { agent_id: "third", prompt: "third" },
+      ],
+      1,
+    );
+    expect(submitted.size).toBe(1);
+
+    const first = submitted.get(1);
+    if (!first || !lifecycleListener) throw new Error("expected first worker lifecycle");
+    const firstMarker = completionMarker(first.prompt);
+    const emitFirst = (snapshot: SnapshotEvent["snapshot"]) =>
+      lifecycleListener?.({ type: "chatgpt_worker_snapshot", tabId: 1, snapshot });
+
+    emitFirst({
+      ready: true,
+      generating: false,
+      latestUserText: first.prompt,
+      latestUserTruncated: false,
+      latestAssistantText: `stale\n${firstMarker}`,
+      latestAssistantTruncated: false,
+      revision: 1,
+      timestamp: first.timestamp,
+    });
+    emitFirst({
+      ready: true,
+      generating: false,
+      latestUserText: "different worker turn",
+      latestUserTruncated: false,
+      latestAssistantText: `wrong worker\n${firstMarker}`,
+      latestAssistantTruncated: false,
+      revision: 2,
+      timestamp: first.timestamp + 1,
+    });
+    emitFirst({
+      ready: true,
+      generating: false,
+      latestUserText: first.prompt,
+      latestUserTruncated: false,
+      latestAssistantText: "missing completion marker",
+      latestAssistantTruncated: false,
+      revision: 3,
+      timestamp: first.timestamp + 2,
+    });
+    emitFirst({
+      ready: true,
+      generating: true,
+      latestUserText: first.prompt,
+      latestUserTruncated: false,
+      latestAssistantText: "still generating",
+      latestAssistantTruncated: false,
+      revision: 4,
+      timestamp: first.timestamp + 3,
+    });
+    emitFirst({
+      ready: true,
+      generating: false,
+      latestUserText: first.prompt,
+      latestUserTruncated: false,
+      latestAssistantText: `out of order\n${firstMarker}`,
+      latestAssistantTruncated: false,
+      revision: 3,
+      timestamp: first.timestamp + 4,
+    });
+    for (let tick = 0; tick < 6; tick += 1) await Promise.resolve();
+    expect(submitted.size).toBe(1);
+
+    emitFirst({
+      ready: true,
+      generating: false,
+      latestUserText: first.prompt,
+      latestUserTruncated: false,
+      latestAssistantText: `First verified result\n${firstMarker}`,
+      latestAssistantTruncated: true,
+      revision: 5,
+      timestamp: first.timestamp + 5,
+    });
+    await secondSubmitted.promise;
+    expect(submitted.size).toBe(2);
+
+    emitFirst({
+      ready: true,
+      generating: false,
+      latestUserText: first.prompt,
+      latestUserTruncated: false,
+      latestAssistantText: `duplicate terminal\n${firstMarker}`,
+      latestAssistantTruncated: false,
+      revision: 6,
+      timestamp: first.timestamp + 6,
+    });
+    for (let tick = 0; tick < 6; tick += 1) await Promise.resolve();
+    expect(submitted.size).toBe(2);
+
+    const second = submitted.get(2);
+    if (!second || !lifecycleListener) throw new Error("expected second worker lifecycle");
+    lifecycleListener({
+      type: "chatgpt_worker_snapshot",
+      tabId: 2,
+      snapshot: {
+        ready: true,
+        generating: false,
+        latestUserText: second.prompt,
+        latestUserTruncated: false,
+        latestAssistantText: `Second verified result\n${completionMarker(second.prompt)}`,
+        latestAssistantTruncated: false,
+        revision: 2,
+        timestamp: second.timestamp + 1,
+      },
+    });
+    await thirdSubmitted.promise;
+    expect(submitted.size).toBe(3);
+
+    const collected = await runtime.collectAgents(spawned.run_id);
+    expect(collected.results[0]?.result).toMatchObject({
+      type: "text",
+      text: "First verified result",
+      contentIsUntrusted: true,
+      truncated: true,
+    });
+    expect(collected.pending).toMatchObject([{ agent_id: "third", state: "GENERATING" }]);
+  });
+
 });

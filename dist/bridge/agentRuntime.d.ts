@@ -110,6 +110,10 @@ export declare class AgentRuntime {
     private createRun;
     /** Returns whether a tab is owned by any live runtime job and must stay private from generic tools. */
     isWorkerTab(tabId: number): boolean;
+    /** Finds the runtime-owned job currently associated with one private worker tab. */
+    private jobForWorkerTab;
+    /** Serializes one validated unsolicited snapshot through the same verification path as collection. */
+    private handleBrowserLifecycleEvent;
     /** Advances one run atomically, returning only marker-validated worker results. */
     collectAgents(runId: string): Promise<{
         run_id: string;
