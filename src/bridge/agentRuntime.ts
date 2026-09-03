@@ -56,6 +56,11 @@ interface ObservationDiagnostics {
   uncertainty_reason?: string;
 }
 
+interface WorkerLease {
+  leaseId: string;
+  acquiredAt: number;
+}
+
 interface AgentJob {
   jobId: string;
   runId: string;
@@ -65,7 +70,7 @@ interface AgentJob {
   submittedPrompt: string;
   submitted: boolean;
   retryRequested: boolean;
-  slotReserved: boolean;
+  workerLease?: WorkerLease;
   transientFailures: number;
   state: AgentState;
   tabId?: number;
@@ -298,7 +303,6 @@ export class AgentRuntime {
         submittedPrompt: buildWorkerPrompt(identity, task.prompt),
         submitted: false,
         retryRequested: false,
-        slotReserved: false,
         transientFailures: 0,
         diagnostics: { recovery_steps: [] },
         state: "CREATED" as const,
@@ -428,9 +432,9 @@ export class AgentRuntime {
     return "RUNNING";
   }
 
-  /** Reports whether a job currently owns a global active-worker reservation. */
+  /** Reports whether a job currently owns a global active-worker lease. */
   private occupiesSlot(job: AgentJob): boolean {
-    return job.slotReserved;
+    return job.workerLease !== undefined;
   }
 
   /** Marks failed jobs with no tab for one later scheduler retry without retrying them in a tight loop. */
@@ -439,8 +443,12 @@ export class AgentRuntime {
       if (run.cancellationRequested) return;
       if (job.state !== "FAILED_TRANSIENT") continue;
       if (job.tabId !== undefined) {
-        if (job.submitted) await this.collectJob(run, job);
-        else await this.dispatch(run, job);
+        if (job.submitted) {
+          await this.collectJob(run, job);
+        } else {
+          const leaseId = job.workerLease?.leaseId;
+          if (leaseId) await this.dispatch(run, job, leaseId);
+        }
         continue;
       }
       job.retryRequested = true;
@@ -465,25 +473,25 @@ export class AgentRuntime {
     while (true) {
       const reservations = this.reserveAvailableJobs();
       if (reservations.length === 0) return;
-      await Promise.all(reservations.map(({ run, job }) => this.dispatch(run, job)));
+      await Promise.all(reservations.map(({ run, job, leaseId }) => this.dispatch(run, job, leaseId)));
     }
   }
 
   /** Reserves all currently available global and per-run worker slots before starting browser operations. */
-  private reserveAvailableJobs(): Array<{ run: AgentRun; job: AgentJob }> {
+  private reserveAvailableJobs(): Array<{ run: AgentRun; job: AgentJob; leaseId: string }> {
     let availableSlots = this.maxActiveWorkers - this.activeWorkerCount();
     if (availableSlots <= 0) return [];
 
-    const reservations: Array<{ run: AgentRun; job: AgentJob }> = [];
+    const reservations: Array<{ run: AgentRun; job: AgentJob; leaseId: string }> = [];
     for (const run of this.runs.values()) {
       if (run.cancellationRequested) continue;
       let runActiveCount = run.jobs.filter((job) => this.occupiesSlot(job)).length;
       for (const job of run.jobs) {
         if (availableSlots <= 0 || runActiveCount >= run.maxConcurrency) break;
         if (!this.isDispatchEligible(job)) continue;
-        job.slotReserved = true;
+        const lease = this.acquireWorkerLease(job);
         job.retryRequested = false;
-        reservations.push({ run, job });
+        reservations.push({ run, job, leaseId: lease.leaseId });
         availableSlots -= 1;
         runActiveCount += 1;
       }
@@ -491,7 +499,7 @@ export class AgentRuntime {
     return reservations;
   }
 
-  /** Returns the number of jobs holding an active-worker reservation across all runs. */
+  /** Returns the number of jobs holding an active-worker lease across all runs. */
   private activeWorkerCount(): number {
     return [...this.runs.values()].reduce(
       (total, run) => total + run.jobs.filter((job) => this.occupiesSlot(job)).length,
@@ -507,16 +515,40 @@ export class AgentRuntime {
     );
   }
 
-  /** Releases a global worker reservation after a job stops using its active slot. */
-  private releaseSlot(job: AgentJob): void {
-    job.slotReserved = false;
+  /** Acquires a unique capacity lease for one dispatch attempt before browser work starts. */
+  private acquireWorkerLease(job: AgentJob): WorkerLease {
+    if (job.workerLease) {
+      throw new Error(
+        `AGENT_RUNTIME_ERROR: job ${job.jobId} already owns worker lease ${job.workerLease.leaseId}`,
+      );
+    }
+    job.submitted = false;
+    job.submittedAt = undefined;
+    job.snapshotBaselineRevision = undefined;
+    job.snapshotLastRevision = undefined;
+    const lease = { leaseId: `lease_${randomUUID()}`, acquiredAt: Date.now() };
+    job.workerLease = lease;
+    return lease;
   }
 
-  /** Opens a private worker tab when needed and submits the job's protocol-bound prompt. */
-  private async dispatch(run: AgentRun, job: AgentJob): Promise<void> {
+  /** Returns whether async work still belongs to the dispatch attempt it started under. */
+  private ownsWorkerLease(job: AgentJob, leaseId: string): boolean {
+    return job.workerLease?.leaseId === leaseId;
+  }
+
+  /** Releases only the expected dispatch lease; duplicate or stale releases are harmless. */
+  private releaseWorkerLease(job: AgentJob, expectedLeaseId: string): boolean {
+    if (!this.ownsWorkerLease(job, expectedLeaseId)) return false;
+    job.workerLease = undefined;
+    return true;
+  }
+
+  /** Opens a private worker tab when needed and submits under one exact dispatch lease. */
+  private async dispatch(run: AgentRun, job: AgentJob, leaseId: string): Promise<void> {
+    if (!this.ownsWorkerLease(job, leaseId)) return;
     if (run.cancellationRequested) {
       job.retryRequested = false;
-      this.releaseSlot(job);
+      this.releaseWorkerLease(job, leaseId);
       return;
     }
     try {
@@ -529,12 +561,13 @@ export class AgentRuntime {
         if (!Number.isInteger(tabId) || tabId <= 0) {
           throw new Error("CHATGPT_AGENT_START_FAILED: invalid tab ID");
         }
+        if (!this.ownsWorkerLease(job, leaseId)) return;
         job.tabId = tabId;
       }
-      if (run.cancellationRequested) return;
+      if (run.cancellationRequested || !this.ownsWorkerLease(job, leaseId)) return;
       job.submittedAt ??= Date.now();
       const submission = await this.submitWithRetry(run, tabId, job);
-      if (run.cancellationRequested) return;
+      if (run.cancellationRequested || !this.ownsWorkerLease(job, leaseId)) return;
       if (submission?.snapshot) {
         job.snapshotBaselineRevision = submission.snapshot.revision;
         job.snapshotLastRevision = submission.snapshot.revision;
@@ -545,20 +578,20 @@ export class AgentRuntime {
       job.transientFailures = 0;
       job.state = "DISPATCHED";
     } catch (error) {
-      await this.failJob(run, job, error);
+      await this.failJob(run, job, error, leaseId);
     }
   }
 
-  /** Records a failure or closes the job permanently after its transient retry budget is exhausted. */
-  private async failJob(run: AgentRun, job: AgentJob, error: unknown): Promise<void> {
-    if (run.cancellationRequested) return;
+  /** Records failure only for the dispatch lease that started the asynchronous work. */
+  private async failJob(run: AgentRun, job: AgentJob, error: unknown, leaseId: string): Promise<void> {
+    if (run.cancellationRequested || !this.ownsWorkerLease(job, leaseId)) return;
     const details = errorDetails(error);
     if (details.retryable) {
       job.transientFailures += 1;
       if (job.transientFailures < MAX_TRANSIENT_FAILURES) {
         job.error = details;
         job.state = "FAILED_TRANSIENT";
-        if (job.tabId === undefined) this.releaseSlot(job);
+        if (job.tabId === undefined) this.releaseWorkerLease(job, leaseId);
         return;
       }
       job.error = {
@@ -572,7 +605,7 @@ export class AgentRuntime {
 
     job.state = "FAILED_TERMINAL";
     await this.closeWorkerTab(job);
-    this.releaseSlot(job);
+    this.releaseWorkerLease(job, leaseId);
   }
 
   /** Cancels every unfinished job while preserving already verified or terminal outcomes. */
@@ -580,15 +613,16 @@ export class AgentRuntime {
     await Promise.all(run.jobs.map((job) => this.cancelJob(job)));
   }
 
-  /** Marks unfinished work cancelled and best-effort closes any tab still owned by the run. */
+  /** Marks unfinished work cancelled and releases only the lease current when cancellation starts. */
   private async cancelJob(job: AgentJob): Promise<void> {
+    const leaseId = job.workerLease?.leaseId;
     if (job.state !== "VERIFIED_DONE" && job.state !== "FAILED_TERMINAL") {
       job.state = "CANCELLED";
       job.error = undefined;
     }
     job.retryRequested = false;
     await this.closeWorkerTab(job);
-    this.releaseSlot(job);
+    if (leaseId) this.releaseWorkerLease(job, leaseId);
   }
 
   /** Closes a worker tab and retains ownership when cleanup fails, preventing generic tool access. */
@@ -664,9 +698,13 @@ export class AgentRuntime {
   }
 
   /** Returns the latest fresh snapshot from the event cache or the extension query seam. */
-  private async readFreshSnapshot(run: AgentRun, job: AgentJob): Promise<ChatGptWorkerSnapshot | undefined> {
+  private async readFreshSnapshot(
+    run: AgentRun,
+    job: AgentJob,
+    leaseId: string,
+  ): Promise<ChatGptWorkerSnapshot | undefined> {
     const tabId = job.tabId;
-    if (tabId === undefined || run.cancellationRequested) return undefined;
+    if (tabId === undefined || run.cancellationRequested || !this.ownsWorkerLease(job, leaseId)) return undefined;
     const cached =
       typeof this.browser.latestChatGptWorkerSnapshot === "function"
         ? this.browser.latestChatGptWorkerSnapshot(tabId)
@@ -678,7 +716,7 @@ export class AgentRuntime {
         tabId,
         afterRevision: Math.max(job.snapshotBaselineRevision ?? 0, job.snapshotLastRevision ?? 0),
       });
-      if (run.cancellationRequested) return undefined;
+      if (run.cancellationRequested || !this.ownsWorkerLease(job, leaseId)) return undefined;
       const snapshot = response?.snapshot;
       if (this.acceptFreshSnapshot(job, snapshot)) return snapshot;
     } catch {
@@ -698,7 +736,12 @@ export class AgentRuntime {
   }
 
   /** Applies the same identity, generation, and completion-marker rules to one fresh snapshot. */
-  private acceptWorkerSnapshot(job: AgentJob, snapshot: ChatGptWorkerSnapshot): "accepted" | "pending" | "fallback" {
+  private acceptWorkerSnapshot(
+    job: AgentJob,
+    snapshot: ChatGptWorkerSnapshot,
+    leaseId: string,
+  ): "accepted" | "pending" | "fallback" {
+    if (!this.ownsWorkerLease(job, leaseId)) return "fallback";
     const worker: WorkerReadResult = {
       ready: snapshot.ready,
       generating: snapshot.generating,
@@ -715,7 +758,7 @@ export class AgentRuntime {
       job.state = "GENERATING";
       return "pending";
     }
-    if (this.acceptObservation(job, worker)) return "accepted";
+    if (this.acceptObservation(job, worker, leaseId)) return "accepted";
     return "fallback";
   }
 
@@ -755,8 +798,8 @@ export class AgentRuntime {
   }
 
   /** Validates one observation and completes the job when the exact dispatched turn and marker are present. */
-  private acceptObservation(job: AgentJob, worker: WorkerReadResult): boolean {
-    if (!this.generationDefinitelyFinished(worker)) return false;
+  private acceptObservation(job: AgentJob, worker: WorkerReadResult, leaseId: string): boolean {
+    if (!this.ownsWorkerLease(job, leaseId) || !this.generationDefinitelyFinished(worker)) return false;
     if (!workerIdentityMatches(job, worker)) {
       throw new Error("WORKER_IDENTITY_MISMATCH: latest user message does not match the dispatched job");
     }
@@ -773,7 +816,7 @@ export class AgentRuntime {
     job.error = undefined;
     if (job.diagnostics.recovery_steps.length === 0) job.diagnostics.uncertainty_reason = undefined;
     job.state = "VERIFIED_DONE";
-    this.releaseSlot(job);
+    this.releaseWorkerLease(job, leaseId);
     return true;
   }
 
@@ -783,19 +826,20 @@ export class AgentRuntime {
     job: AgentJob,
     source: ObservationDiagnostics["observation_source"],
     attempts: number,
+    leaseId: string,
   ): Promise<WorkerReadResult | undefined> {
     const tabId = job.tabId;
-    if (tabId === undefined) return undefined;
+    if (tabId === undefined || !this.ownsWorkerLease(job, leaseId)) return undefined;
     let latest: WorkerReadResult | undefined;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
-      if (run.cancellationRequested) return undefined;
+      if (run.cancellationRequested || !this.ownsWorkerLease(job, leaseId)) return undefined;
       if (attempt > 0) await new Promise<void>((resolve) => setTimeout(resolve, 50 * 2 ** (attempt - 1)));
-      if (run.cancellationRequested) return undefined;
+      if (run.cancellationRequested || !this.ownsWorkerLease(job, leaseId)) return undefined;
       try {
         latest = await this.browser.request<WorkerReadResult>("read_chatgpt_worker", { tabId });
-        if (run.cancellationRequested) return undefined;
+        if (run.cancellationRequested || !this.ownsWorkerLease(job, leaseId)) return undefined;
         this.rememberObservation(job, latest, source);
-        if (this.acceptObservation(job, latest)) return latest;
+        if (this.acceptObservation(job, latest, leaseId)) return latest;
       } catch (error) {
         const details = errorDetails(error);
         job.error = details;
@@ -845,23 +889,29 @@ export class AgentRuntime {
     run: AgentRun,
     job: AgentJob,
     initial: WorkerReadResult,
+    leaseId: string,
   ): Promise<void> {
     const tabId = job.tabId;
-    if (tabId === undefined) return;
+    if (tabId === undefined || !this.ownsWorkerLease(job, leaseId)) return;
     job.state = "OBSERVATION_UNCERTAIN";
     job.diagnostics.uncertainty_reason = "completion marker missing after generation appeared finished";
     job.diagnostics.recovery_steps = ["current_state"];
 
     const currentAccepted = await this.recoveryAttempt(run, job, "current_state", () =>
-      this.acceptObservation(job, job.bestObservation ?? initial),
+      this.acceptObservation(job, job.bestObservation ?? initial, leaseId),
     );
-    if (run.cancellationRequested || currentAccepted || Boolean(job.result)) return;
+    if (
+      run.cancellationRequested ||
+      !this.ownsWorkerLease(job, leaseId) ||
+      currentAccepted ||
+      Boolean(job.result)
+    ) return;
 
     job.diagnostics.recovery_steps.push("bounded_reread");
     const reread = await this.recoveryAttempt(run, job, "bounded_reread", () =>
-      this.rereadWithBackoff(run, job, "backoff_reread", 3),
+      this.rereadWithBackoff(run, job, "backoff_reread", 3, leaseId),
     );
-    if (run.cancellationRequested || Boolean(job.result)) return;
+    if (run.cancellationRequested || !this.ownsWorkerLease(job, leaseId) || Boolean(job.result)) return;
 
     let previousActiveTabId: number | undefined;
     try {
@@ -876,45 +926,47 @@ export class AgentRuntime {
     try {
       activated = await this.recoveryAttempt(run, job, "activate_worker_tab", async () => {
         await this.browser.request("activate_worker_tab", { tabId });
-        return this.rereadWithBackoff(run, job, "activated_reread", 2);
+        return this.rereadWithBackoff(run, job, "activated_reread", 2, leaseId);
       });
     } finally {
       await this.restoreActiveTab(previousActiveTabId);
     }
-    if (run.cancellationRequested || Boolean(job.result)) return;
+    if (run.cancellationRequested || !this.ownsWorkerLease(job, leaseId) || Boolean(job.result)) return;
 
     const latest = activated ?? reread ?? initial;
     if (this.generationDefinitelyFinished(latest)) {
       job.diagnostics.recovery_steps.push("reload_worker_tab");
       await this.recoveryAttempt(run, job, "reload_worker_tab", async () => {
         await this.browser.request("reload_worker_tab", { tabId });
-        return this.rereadWithBackoff(run, job, "reload_reread", 4);
+        return this.rereadWithBackoff(run, job, "reload_reread", 4, leaseId);
       });
     }
-    if (run.cancellationRequested || Boolean(job.result)) return;
+    if (run.cancellationRequested || !this.ownsWorkerLease(job, leaseId) || Boolean(job.result)) return;
 
     job.error = {
       code: "RECOVERY_EXHAUSTED",
       message: "Finished worker result could not be verified after bounded observation recovery",
       retryable: false,
     };
+    if (!this.ownsWorkerLease(job, leaseId)) return;
     job.state = "FAILED_TERMINAL";
     await this.closeWorkerTab(job);
-    this.releaseSlot(job);
+    this.releaseWorkerLease(job, leaseId);
   }
 
   /** Reads and validates one worker response before exposing its bounded untrusted result. */
   private async collectJob(run: AgentRun, job: AgentJob): Promise<void> {
     const tabId = job.tabId;
-    if (tabId === undefined || run.cancellationRequested) return;
+    const leaseId = job.workerLease?.leaseId;
+    if (tabId === undefined || leaseId === undefined || run.cancellationRequested) return;
     try {
-      const snapshot = await this.readFreshSnapshot(run, job);
+      const snapshot = await this.readFreshSnapshot(run, job, leaseId);
       if (snapshot) {
-        const snapshotResult = this.acceptWorkerSnapshot(job, snapshot);
+        const snapshotResult = this.acceptWorkerSnapshot(job, snapshot, leaseId);
         if (snapshotResult === "accepted" || snapshotResult === "pending") return;
       }
       const worker = await this.browser.request<WorkerReadResult>("read_chatgpt_worker", { tabId });
-      if (run.cancellationRequested) return;
+      if (run.cancellationRequested || !this.ownsWorkerLease(job, leaseId)) return;
       job.error = undefined;
       job.transientFailures = 0;
       this.rememberObservation(job, worker, "initial_read");
@@ -925,11 +977,11 @@ export class AgentRuntime {
       if (!workerIdentityMatches(job, worker)) {
         throw new Error("WORKER_IDENTITY_MISMATCH: latest user message does not match the dispatched job");
       }
-      if (this.acceptObservation(job, worker)) return;
-      await this.recoverFinishedObservation(run, job, worker);
+      if (this.acceptObservation(job, worker, leaseId)) return;
+      await this.recoverFinishedObservation(run, job, worker, leaseId);
     } catch (error) {
       if (run.cancellationRequested) return;
-      await this.failJob(run, job, error);
+      await this.failJob(run, job, error, leaseId);
     }
   }
 
