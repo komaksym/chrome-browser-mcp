@@ -31,7 +31,7 @@ export declare class BrowserClient {
     request<T>(method: BrowserMethod, params?: Record<string, unknown>): Promise<T>;
     /** Routes a single decoded Native Messaging frame to connection state or its pending request. */
     private handleMessage;
-    /** Caches one newer, bounded worker snapshot from an unsolicited native event. */
+    /** Caches one newer bounded snapshot without letting current-turn completion evidence regress. */
     private cacheChatGptWorkerSnapshot;
     /** Rejects all pending requests after the Native Messaging transport becomes unusable. */
     private failAll;

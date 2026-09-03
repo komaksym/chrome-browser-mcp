@@ -145,6 +145,78 @@ describe("BrowserClient", () => {
     expect(client.latestChatGptWorkerSnapshot(42)?.revision).toBe(8);
   });
 
+  it("preserves the first completed response across a newer degraded same-turn snapshot", () => {
+    const fromExtension = new PassThrough();
+    const client = new BrowserClient(fromExtension, new PassThrough(), 2_000);
+    const marker = "<<<SUBAGENT_DONE:11111111-1111-1111-1111-111111111111>>>";
+    const latestUserText = `SUBAGENT_PROTOCOL_VERSION: 1\n${marker}`;
+
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "chatgpt_worker_snapshot",
+      tabId: 42,
+      snapshot: {
+        ready: true,
+        generating: true,
+        latestUserText,
+        latestUserTruncated: false,
+        latestAssistantText: `First response\n${marker}`,
+        latestAssistantTruncated: false,
+        revision: 8,
+        timestamp: 1_700_000_000_008,
+      },
+    });
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "chatgpt_worker_snapshot",
+      tabId: 42,
+      snapshot: {
+        ready: true,
+        generating: false,
+        latestUserText,
+        latestUserTruncated: false,
+        latestAssistantText: "First response",
+        latestAssistantTruncated: false,
+        revision: 9,
+        timestamp: 1_700_000_000_009,
+      },
+    });
+
+    expect(client.latestChatGptWorkerSnapshot(42)).toEqual({
+      ready: true,
+      generating: false,
+      latestUserText,
+      latestUserTruncated: false,
+      latestAssistantText: `First response\n${marker}`,
+      latestAssistantTruncated: false,
+      revision: 9,
+      timestamp: 1_700_000_000_009,
+    });
+
+    const nextMarker = "<<<SUBAGENT_DONE:22222222-2222-2222-2222-222222222222>>>";
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "chatgpt_worker_snapshot",
+      tabId: 42,
+      snapshot: {
+        ready: true,
+        generating: true,
+        latestUserText: `next task\n${nextMarker}`,
+        latestUserTruncated: false,
+        latestAssistantText: null,
+        latestAssistantTruncated: false,
+        revision: 10,
+        timestamp: 1_700_000_000_010,
+      },
+    });
+
+    expect(client.latestChatGptWorkerSnapshot(42)).toMatchObject({
+      latestUserText: `next task\n${nextMarker}`,
+      latestAssistantText: null,
+      revision: 10,
+    });
+  });
+
   it("clears ChatGPT worker snapshots when a new native connection becomes ready", () => {
     const fromExtension = new PassThrough();
     const client = new BrowserClient(fromExtension, new PassThrough(), 2_000);

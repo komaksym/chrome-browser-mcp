@@ -57,6 +57,36 @@ function validChatGptWorkerSnapshot(raw) {
         timestamp,
     };
 }
+const SUBAGENT_COMPLETION_MARKER = /<<<SUBAGENT_DONE:[^>\r\n]+>>>/g;
+/** Returns the protocol marker carried by a fully observable worker user turn. */
+function workerTurnMarker(snapshot) {
+    if (snapshot.latestUserTruncated || typeof snapshot.latestUserText !== "string")
+        return undefined;
+    return snapshot.latestUserText.match(SUBAGENT_COMPLETION_MARKER)?.at(-1);
+}
+/** Returns the marker only when this snapshot contains a completed response for its own worker turn. */
+function completedWorkerMarker(snapshot) {
+    const marker = workerTurnMarker(snapshot);
+    if (!marker || !snapshot.latestAssistantText)
+        return undefined;
+    return snapshot.latestAssistantText.trimEnd().endsWith(marker) ? marker : undefined;
+}
+/** Keeps completed current-turn text sticky while accepting newer lifecycle state and revisions. */
+function preserveCompletedWorkerEvidence(current, incoming) {
+    const completedMarker = completedWorkerMarker(current);
+    if (!completedMarker || completedWorkerMarker(incoming) === completedMarker)
+        return incoming;
+    const incomingMarker = workerTurnMarker(incoming);
+    if (incomingMarker !== undefined && incomingMarker !== completedMarker)
+        return incoming;
+    return {
+        ...incoming,
+        latestUserText: incomingMarker === completedMarker ? incoming.latestUserText : current.latestUserText,
+        latestUserTruncated: incomingMarker === completedMarker ? incoming.latestUserTruncated : current.latestUserTruncated,
+        latestAssistantText: current.latestAssistantText,
+        latestAssistantTruncated: current.latestAssistantTruncated,
+    };
+}
 /** Sends typed requests to the connected Chrome extension over Native Messaging. */
 export class BrowserClient {
     output;
@@ -140,7 +170,7 @@ export class BrowserClient {
             pending.resolve(message.result);
         }
     }
-    /** Caches one newer, bounded worker snapshot from an unsolicited native event. */
+    /** Caches one newer bounded snapshot without letting current-turn completion evidence regress. */
     cacheChatGptWorkerSnapshot(message) {
         if (message.type !== "event" ||
             message.event !== "chatgpt_worker_snapshot" ||
@@ -154,7 +184,7 @@ export class BrowserClient {
         const current = this.chatGptWorkerSnapshots.get(message.tabId);
         if (current && snapshot.revision <= current.revision)
             return;
-        this.chatGptWorkerSnapshots.set(message.tabId, snapshot);
+        this.chatGptWorkerSnapshots.set(message.tabId, current ? preserveCompletedWorkerEvidence(current, snapshot) : snapshot);
     }
     /** Rejects all pending requests after the Native Messaging transport becomes unusable. */
     failAll(error) {

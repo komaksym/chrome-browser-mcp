@@ -817,6 +817,7 @@ describe("AgentRuntime", () => {
 
   it("completes from a fresh streamed snapshot without rereading the virtualized DOM", async () => {
     let submittedPrompt = "";
+    let submissionCalls = 0;
     let directReads = 0;
     let snapshot: Record<string, unknown> | undefined;
     const browser = {
@@ -824,6 +825,7 @@ describe("AgentRuntime", () => {
         if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 801 } });
         if (method === "chatgpt_worker_submit") {
+          submissionCalls += 1;
           submittedPrompt = args.prompt as string;
           snapshot = {
             ready: true,
@@ -852,6 +854,7 @@ describe("AgentRuntime", () => {
 
     const collected = await runtime.collectAgents(spawned.run_id);
 
+    expect(submissionCalls).toBe(1);
     expect(directReads).toBe(0);
     expect(collected).toMatchObject({
       state: "COMPLETE",
