@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import { NativeMessageReader, writeNativeMessage } from "./nativeMessaging.js";
-import type { BrowserMethod, ChatGptWorkerSnapshot, IncomingNativeMessage, NativeRequest } from "./types.js";
+import type {
+  BrowserLifecycleEvent,
+  BrowserMethod,
+  ChatGptWorkerSnapshot,
+  IncomingNativeMessage,
+  NativeRequest,
+} from "./types.js";
 
 const MAX_CHATGPT_WORKER_USER_CHARACTERS = 110_000;
 const MAX_CHATGPT_WORKER_ASSISTANT_CHARACTERS = 30_000;
@@ -75,6 +81,7 @@ function validChatGptWorkerSnapshot(raw: unknown): ChatGptWorkerSnapshot | undef
 export class BrowserClient {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly chatGptWorkerSnapshots = new Map<number, ChatGptWorkerSnapshot>();
+  private readonly lifecycleListeners = new Set<(event: BrowserLifecycleEvent) => void>();
   private ready = false;
   private extensionVersion: string | null = null;
   private extensionId: string | null = null;
@@ -98,6 +105,12 @@ export class BrowserClient {
   /** Returns the extension connection state advertised by the latest ready message. */
   status(): { connected: boolean; extensionVersion: string | null; extensionId: string | null } {
     return { connected: this.ready, extensionVersion: this.extensionVersion, extensionId: this.extensionId };
+  }
+
+  /** Subscribes to validated unsolicited worker snapshots and browser ready/reconnect notifications. */
+  subscribeLifecycle(listener: (event: BrowserLifecycleEvent) => void): () => void {
+    this.lifecycleListeners.add(listener);
+    return () => this.lifecycleListeners.delete(listener);
   }
 
   /** Returns the latest validated ephemeral ChatGPT worker snapshot for one tab. */
@@ -143,10 +156,16 @@ export class BrowserClient {
       this.ready = true;
       this.extensionVersion = message.extensionVersion;
       this.extensionId = message.extensionId;
+      this.emitLifecycle({
+        type: "ready",
+        extensionVersion: message.extensionVersion,
+        extensionId: message.extensionId,
+      });
       return;
     }
     if (message.type === "event") {
-      this.cacheChatGptWorkerSnapshot(message);
+      const event = this.cacheChatGptWorkerSnapshot(message);
+      if (event) this.emitLifecycle(event);
       return;
     }
     if (message.type !== "response" || typeof message.id !== "string") return;
@@ -161,21 +180,37 @@ export class BrowserClient {
     }
   }
 
-  /** Caches one newer, bounded worker snapshot from an unsolicited native event. */
-  private cacheChatGptWorkerSnapshot(message: IncomingNativeMessage): void {
+  /** Caches one newer, bounded worker snapshot and returns its validated lifecycle event. */
+  private cacheChatGptWorkerSnapshot(message: IncomingNativeMessage): BrowserLifecycleEvent | undefined {
     if (
       message.type !== "event" ||
       message.event !== "chatgpt_worker_snapshot" ||
       !Number.isSafeInteger(message.tabId) ||
       message.tabId <= 0
     ) {
-      return;
+      return undefined;
     }
     const snapshot = validChatGptWorkerSnapshot(message.snapshot);
-    if (!snapshot) return;
+    if (!snapshot) return undefined;
     const current = this.chatGptWorkerSnapshots.get(message.tabId);
-    if (current && snapshot.revision <= current.revision) return;
+    if (current && snapshot.revision <= current.revision) return undefined;
     this.chatGptWorkerSnapshots.set(message.tabId, snapshot);
+    return { type: "chatgpt_worker_snapshot", tabId: message.tabId, snapshot: { ...snapshot } };
+  }
+
+  /** Delivers one lifecycle event without allowing observers to mutate cached evidence or disrupt parsing. */
+  private emitLifecycle(event: BrowserLifecycleEvent): void {
+    for (const listener of this.lifecycleListeners) {
+      const delivered =
+        event.type === "chatgpt_worker_snapshot"
+          ? { ...event, snapshot: { ...event.snapshot } }
+          : { ...event };
+      try {
+        listener(delivered);
+      } catch {
+        // A lifecycle observer cannot be allowed to disrupt Native Messaging protocol handling.
+      }
+    }
   }
 
   /** Rejects all pending requests after the Native Messaging transport becomes unusable. */
