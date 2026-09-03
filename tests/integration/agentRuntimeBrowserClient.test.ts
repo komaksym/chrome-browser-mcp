@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { AgentRuntime } from "../../src/bridge/agentRuntime.js";
 import { BrowserClient } from "../../src/bridge/browserClient.js";
 import { NativeMessageReader, writeNativeMessage } from "../../src/bridge/nativeMessaging.js";
+import type { NativeRequest } from "../../src/bridge/types.js";
 
 describe("AgentRuntime with BrowserClient", () => {
   it("recovers a missed first response through observation-only rereads without resubmitting", async () => {
@@ -22,12 +23,7 @@ describe("AgentRuntime with BrowserClient", () => {
     new NativeMessageReader(
       toExtension,
       (message) => {
-        const request = message as {
-          type: string;
-          id: string;
-          method: string;
-          params?: Record<string, unknown>;
-        };
+        const request = message as NativeRequest;
         if (request.type !== "request") return;
 
         let result: unknown;
@@ -40,7 +36,7 @@ describe("AgentRuntime with BrowserClient", () => {
             break;
           case "chatgpt_worker_submit":
             submissionCalls += 1;
-            submittedPrompt = request.params?.prompt as string;
+            submittedPrompt = request.params.prompt as string;
             result = { submitted: true };
             break;
           case "read_chatgpt_worker": {
