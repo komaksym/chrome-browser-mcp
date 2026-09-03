@@ -402,35 +402,6 @@ describe("AgentRuntime", () => {
  });
  });
 
- it("activates a background worker to recover without another submission and restores the prior tab", async () => {
- const { browser, state } = createRecoveryBrowser({
- read: (current) => {
- const recovered = current.reads >= 5;
- return Promise.resolve({
- ready: true,
- generating: false,
- latestUserText: current.submittedPrompt,
- latestAssistantText: recovered
- ? `Activated result\n${completionMarker(current.submittedPrompt)}`
- : "marker unavailable in background",
- latestAssistantTruncated: false,
- tab: { tabId: 1, windowId: 10, active: recovered, discarded: false, status: "complete" },
- });
- },
- reload: () => {
- throw new Error("reload should not be needed");
- },
- });
- const runtime = new AgentRuntime(browser);
- const spawned = await runtime.spawnAgents([{ agent_id: "activate", prompt: "answer once" }], 1);
-
- const collected = await runtime.collectAgents(spawned.run_id);
-
- expect(state.submissions).toBe(1);
- expect(state.activations).toEqual([1, 99]);
- expect(collected.state).toBe("COMPLETE");
- });
-
  it("reloads only a definitely finished worker and recovers without resubmission", async () => {
  const { browser, state } = createRecoveryBrowser({
  read: (current) => Promise.resolve({
@@ -452,6 +423,7 @@ describe("AgentRuntime", () => {
 
  expect(state.submissions).toBe(1);
  expect(state.reloads).toBe(1);
+ expect(state.activations).toEqual([]);
  expect(state.reads).toBeGreaterThan(1);
  expect(collected.state).toBe("COMPLETE");
  });
@@ -482,7 +454,7 @@ describe("AgentRuntime", () => {
  error: { code: "RECOVERY_EXHAUSTED", retryable: false },
  diagnostics: {
  uncertainty_reason: "completion marker missing after generation appeared finished",
- recovery_steps: ["current_state", "bounded_reread", "activate_worker_tab", "reload_worker_tab"],
+ recovery_steps: ["current_state", "bounded_reread", "reload_worker_tab"],
  tab: { active: false, discarded: true, status: "complete" },
  },
  }],
@@ -545,7 +517,7 @@ describe("AgentRuntime", () => {
  error: { code: "RECOVERY_EXHAUSTED" },
  diagnostics: {
  observation_state: { generating: true },
- recovery_steps: ["current_state", "bounded_reread", "activate_worker_tab"],
+ recovery_steps: ["current_state", "bounded_reread"],
  },
  }],
  });
@@ -686,7 +658,7 @@ describe("AgentRuntime", () => {
  state: "FAILED_TERMINAL",
  error: { code: "RECOVERY_EXHAUSTED", retryable: false },
  diagnostics: {
- recovery_steps: ["current_state", "bounded_reread", "activate_worker_tab", "reload_worker_tab"],
+ recovery_steps: ["current_state", "bounded_reread", "reload_worker_tab"],
  },
  }],
  });
