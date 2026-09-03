@@ -8,6 +8,7 @@ interface NativeResponse {
 }
 
 let nativeMessageListener: ((message: unknown) => void) | undefined;
+let nativeDisconnectListener: (() => void) | undefined;
 let workerSnapshotListener: ((message: unknown, sender: chrome.runtime.MessageSender) => void) | undefined;
 let tabRemovedListener: ((tabId: number) => void) | undefined;
 const nativeMessages: unknown[] = [];
@@ -23,7 +24,7 @@ const chromeApi = {
     connectNative: () => ({
       postMessage: (message: unknown) => nativeMessages.push(message),
       onMessage: { addListener: (listener: (message: unknown) => void) => { nativeMessageListener = listener; } },
-      onDisconnect: { addListener: vi.fn() },
+      onDisconnect: { addListener: (listener: () => void) => { nativeDisconnectListener = listener; } },
     }),
     onInstalled: { addListener: vi.fn() },
     onStartup: { addListener: vi.fn() },
@@ -279,6 +280,48 @@ describe("extension background worker commands", () => {
         tabId: 88,
       },
     ]);
+  });
+
+  it("replays a worker-tab-removal event after the native bridge reconnects", async () => {
+    vi.useFakeTimers();
+    try {
+      const parent = {
+        id: 47,
+        url: "https://chatgpt.com/c/parent",
+        incognito: false,
+        active: false,
+        pinned: false,
+        discarded: false,
+        windowId: 9,
+        index: 0,
+      } as chrome.tabs.Tab;
+      const worker = {
+        ...parent,
+        id: 89,
+        url: "https://chatgpt.com/",
+        openerTabId: 47,
+      } as chrome.tabs.Tab;
+      tabs.set(47, parent);
+      (chromeApi.tabs.create as unknown as { mockResolvedValue: (value: chrome.tabs.Tab) => void }).mockResolvedValue(worker);
+
+      const opened = await request("open_agent_worker_tab", { anchorTabId: 47 });
+      expect(opened).toMatchObject({ result: { tab: { tabId: 89 } } });
+      nativeMessages.splice(0);
+
+      nativeDisconnectListener?.();
+      tabRemovedListener?.(89);
+
+      expect(nativeMessages).toEqual([]);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(nativeMessages).toContainEqual({
+        type: "event",
+        event: "agent_worker_tab_removed",
+        tabId: 89,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("never promotes an in-flight or known worker tab to the next run anchor", async () => {

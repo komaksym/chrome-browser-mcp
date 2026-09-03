@@ -24,6 +24,7 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectDelay = 500;
 const workerSnapshots = new Map<number, ChatGptWorkerSnapshot>();
 const knownAgentWorkerTabIds = new Set<number>();
+const pendingAgentWorkerTabRemovals = new Set<number>();
 const pendingWorkerCreationsByAnchorTabId = new Map<number, number>();
 
 const SENSITIVE_QUERY_KEY = /(?:access[_-]?token|token|auth|authorization|api[_-]?key|secret|session|code|sig|signature|jwt|credential|password)/i;
@@ -545,6 +546,10 @@ function connectNative(): void {
     for (const [tabId, snapshot] of workerSnapshots) {
       nativePort.postMessage({ type: "event", event: "chatgpt_worker_snapshot", tabId, snapshot });
     }
+    for (const tabId of pendingAgentWorkerTabRemovals) {
+      nativePort.postMessage({ type: "event", event: "agent_worker_tab_removed", tabId });
+      pendingAgentWorkerTabRemovals.delete(tabId);
+    }
     nativePort.onMessage.addListener((message: unknown) => {
       if (!message || typeof message !== "object" || !("type" in message) || (message as { type?: string }).type !== "request") return;
       const request = message as NativeRequest;
@@ -583,11 +588,8 @@ function scheduleReconnect(): void {
 chrome.tabs.onRemoved.addListener((tabId) => {
   workerSnapshots.delete(tabId);
   if (!knownAgentWorkerTabIds.delete(tabId)) return;
-  nativePort?.postMessage({
-    type: "event",
-    event: "agent_worker_tab_removed",
-    tabId,
-  });
+  if (!nativePort) pendingAgentWorkerTabRemovals.add(tabId);
+  else nativePort.postMessage({ type: "event", event: "agent_worker_tab_removed", tabId });
 });
 chrome.runtime.onInstalled.addListener(connectNative);
 chrome.runtime.onStartup.addListener(connectNative);
