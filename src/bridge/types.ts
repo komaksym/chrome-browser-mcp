@@ -59,12 +59,23 @@ export interface NativeChatGptWorkerSnapshotEvent {
   snapshot: ChatGptWorkerSnapshot;
 }
 
+export interface NativeAgentWorkerTabRemovedEvent {
+  type: "event";
+  event: "agent_worker_tab_removed";
+  tabId: number;
+}
+
 /** Carries validated unsolicited browser lifecycle observations to runtime consumers. */
 export type BrowserLifecycleEvent =
   | { type: "ready"; extensionVersion: string; extensionId: string }
-  | { type: "chatgpt_worker_snapshot"; tabId: number; snapshot: ChatGptWorkerSnapshot };
+  | { type: "chatgpt_worker_snapshot"; tabId: number; snapshot: ChatGptWorkerSnapshot }
+  | { type: "agent_worker_tab_removed"; tabId: number };
 
-export type IncomingNativeMessage = NativeResponse | NativeReady | NativeChatGptWorkerSnapshotEvent;
+export type IncomingNativeMessage =
+  | NativeResponse
+  | NativeReady
+  | NativeChatGptWorkerSnapshotEvent
+  | NativeAgentWorkerTabRemovedEvent;
 
 export interface TabSummary {
   tabId: number;

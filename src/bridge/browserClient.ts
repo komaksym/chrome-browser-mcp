@@ -200,7 +200,7 @@ export class BrowserClient {
       return;
     }
     if (message.type === "event") {
-      const event = this.cacheChatGptWorkerSnapshot(message);
+      const event = this.validLifecycleEvent(message);
       if (event) this.emitLifecycle(event);
       return;
     }
@@ -214,6 +214,17 @@ export class BrowserClient {
     } else {
       pending.resolve(message.result);
     }
+  }
+
+  /** Validates one bounded native event and normalizes it for lifecycle consumers. */
+  private validLifecycleEvent(message: IncomingNativeMessage): BrowserLifecycleEvent | undefined {
+    if (message.type !== "event") return undefined;
+    if (message.event === "agent_worker_tab_removed") {
+      if (!Number.isSafeInteger(message.tabId) || message.tabId <= 0) return undefined;
+      this.chatGptWorkerSnapshots.delete(message.tabId);
+      return { type: "agent_worker_tab_removed", tabId: message.tabId };
+    }
+    return this.cacheChatGptWorkerSnapshot(message);
   }
 
   /** Caches one newer bounded snapshot and returns lifecycle evidence without regressing current-turn completion. */

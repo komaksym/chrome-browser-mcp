@@ -9,6 +9,7 @@ interface NativeResponse {
 
 let nativeMessageListener: ((message: unknown) => void) | undefined;
 let workerSnapshotListener: ((message: unknown, sender: chrome.runtime.MessageSender) => void) | undefined;
+let tabRemovedListener: ((tabId: number) => void) | undefined;
 const nativeMessages: unknown[] = [];
 const tabs = new Map<number, chrome.tabs.Tab>();
 const executeScript = vi.fn();
@@ -41,7 +42,11 @@ const chromeApi = {
     create: vi.fn<() => Promise<chrome.tabs.Tab>>(() => Promise.resolve(undefined as unknown as chrome.tabs.Tab)),
     update: updateTab,
     remove: vi.fn(),
-    onRemoved: { addListener: vi.fn() },
+    onRemoved: {
+      addListener: (listener: (tabId: number) => void) => {
+        tabRemovedListener = listener;
+      },
+    },
   },
   windows: { update: updateWindow },
   scripting: { executeScript },
@@ -237,6 +242,43 @@ describe("extension background worker commands", () => {
       windowId: 9,
       openerTabId: 47,
     });
+  });
+
+  it("emits one bounded lifecycle event only when a known Agent Runtime worker tab is removed", async () => {
+    const parent = {
+      id: 47,
+      url: "https://chatgpt.com/c/parent",
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 9,
+      index: 0,
+    } as chrome.tabs.Tab;
+    const worker = {
+      ...parent,
+      id: 88,
+      url: "https://chatgpt.com/",
+      openerTabId: 47,
+    } as chrome.tabs.Tab;
+    tabs.set(47, parent);
+    (chromeApi.tabs.create as unknown as { mockResolvedValue: (value: chrome.tabs.Tab) => void }).mockResolvedValue(worker);
+
+    const opened = await request("open_agent_worker_tab", { anchorTabId: 47 });
+    expect(opened).toMatchObject({ result: { tab: { tabId: 88 } } });
+    nativeMessages.splice(0);
+
+    tabRemovedListener?.(12);
+    tabRemovedListener?.(88);
+    tabRemovedListener?.(88);
+
+    expect(nativeMessages).toEqual([
+      {
+        type: "event",
+        event: "agent_worker_tab_removed",
+        tabId: 88,
+      },
+    ]);
   });
 
   it("never promotes an in-flight or known worker tab to the next run anchor", async () => {
