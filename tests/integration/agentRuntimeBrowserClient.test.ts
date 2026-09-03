@@ -52,10 +52,7 @@ describe("AgentRuntime with BrowserClient", () => {
               generating: false,
               latestUserText: submittedPrompt,
               latestUserTruncated: false,
-              latestAssistantText:
-                directReads === 1
-                  ? "Finished but first observation missed marker"
-                  : `Recovered result\n${marker}`,
+              latestAssistantText: directReads === 1 ? "First response" : `First response\n${marker}`,
               latestAssistantTruncated: false,
               tab: { tabId: 42, windowId: 10, active: false, discarded: false, status: "complete" },
             };
@@ -91,7 +88,7 @@ describe("AgentRuntime with BrowserClient", () => {
     expect(collected).toMatchObject({
       state: "COMPLETE",
       barrier: { satisfied: true },
-      results: [{ agent_id: "recover", result: { text: "Recovered result" } }],
+      results: [{ agent_id: "recover", result: { text: "First response" } }],
       failed: [],
       pending: [],
     });
