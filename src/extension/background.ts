@@ -509,7 +509,7 @@ async function execute(method: BrowserMethod, params: Record<string, unknown>): 
       const windowId = numberParam(params, "windowId", -1);
       const tab = await chrome.tabs.create({
         url: httpUrlParam(params, "url"),
-        active: params.active !== false,
+        active: params.active === true,
         ...(windowId >= 0 ? { windowId } : {}),
       });
       if (tab.incognito) throw new Error("INCOGNITO_DISABLED: Incognito tabs are excluded");
