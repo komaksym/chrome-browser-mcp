@@ -33,6 +33,13 @@ interface ObservationDiagnostics {
     recovery_steps: RecoveryStep[];
     uncertainty_reason?: string;
 }
+declare const workerLeaseIdBrand: unique symbol;
+type WorkerLeaseId = string & {
+    readonly [workerLeaseIdBrand]: true;
+};
+interface WorkerLease {
+    leaseId: WorkerLeaseId;
+}
 interface AgentJob {
     jobId: string;
     runId: string;
@@ -42,7 +49,7 @@ interface AgentJob {
     submittedPrompt: string;
     submitted: boolean;
     retryRequested: boolean;
-    slotReserved: boolean;
+    workerLease?: WorkerLease;
     transientFailures: number;
     state: AgentState;
     tabId?: number;
@@ -169,7 +176,7 @@ export declare class AgentRuntime {
     private verifiedResult;
     /** Collapses job states into the run-level state exposed by the MCP tool. */
     private runState;
-    /** Reports whether a job currently owns a global active-worker reservation. */
+    /** Reports whether a job currently owns a global active-worker lease. */
     private occupiesSlot;
     /** Marks failed jobs with no tab for one later scheduler retry without retrying them in a tight loop. */
     private retryTransientJobs;
@@ -181,19 +188,29 @@ export declare class AgentRuntime {
     private pumpScheduler;
     /** Reserves all currently available global and per-run worker slots before starting browser operations. */
     private reserveAvailableJobs;
-    /** Returns the number of jobs holding an active-worker reservation across all runs. */
+    /** Returns the number of jobs holding an active-worker lease across all runs. */
     private activeWorkerCount;
     /** Identifies jobs that the global scheduler is allowed to start or retry. */
     private isDispatchEligible;
-    /** Releases a global worker reservation after a job stops using its active slot. */
-    private releaseSlot;
-    /** Opens a private worker tab when needed and submits the job's protocol-bound prompt. */
+    /** Acquires a unique capacity lease for one dispatch attempt before browser work starts. */
+    private acquireWorkerLease;
+    /** Captures the currently owned lease as one attempt context for async collection or retry work. */
+    private currentDispatchAttempt;
+    /** Returns whether this exact dispatch attempt still owns its lease and has not been cancelled. */
+    private isDispatchAttemptActive;
+    /** Returns whether async work still owns the exact worker lease it started under. */
+    private ownsWorkerLease;
+    /** Releases only the expected worker lease; duplicate or stale releases are harmless. */
+    private releaseWorkerLease;
+    /** Releases only the lease captured by this dispatch attempt. */
+    private releaseDispatchAttempt;
+    /** Opens a private worker tab when needed and submits under one exact dispatch attempt. */
     private dispatch;
-    /** Records a failure or closes the job permanently after its transient retry budget is exhausted. */
+    /** Records failure only for the dispatch attempt that started the asynchronous work. */
     private failJob;
     /** Cancels every unfinished job while preserving already verified or terminal outcomes. */
     private cancelRun;
-    /** Marks unfinished work cancelled and best-effort closes any tab still owned by the run. */
+    /** Marks unfinished work cancelled and releases only the lease current when cancellation starts. */
     private cancelJob;
     /** Closes a worker tab and retains ownership when cleanup fails, preventing generic tool access. */
     private closeWorkerTab;
