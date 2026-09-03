@@ -34,7 +34,7 @@ export declare class BrowserClient {
     request<T>(method: BrowserMethod, params?: Record<string, unknown>): Promise<T>;
     /** Routes a single decoded Native Messaging frame to connection state or its pending request. */
     private handleMessage;
-    /** Caches one newer, bounded worker snapshot and returns its validated lifecycle event. */
+    /** Caches one newer bounded snapshot and returns lifecycle evidence without regressing current-turn completion. */
     private cacheChatGptWorkerSnapshot;
     /** Delivers one lifecycle event without allowing observers to mutate cached evidence or disrupt parsing. */
     private emitLifecycle;
