@@ -112,7 +112,7 @@ export declare class AgentRuntime {
     isWorkerTab(tabId: number): boolean;
     /** Finds the runtime-owned job currently associated with one private worker tab. */
     private jobForWorkerTab;
-    /** Serializes one validated unsolicited snapshot through the same verification path as collection. */
+    /** Serializes validated worker lifecycle observations through the runtime state machine. */
     private handleBrowserLifecycleEvent;
     /** Advances one run atomically, returning only marker-validated worker results. */
     collectAgents(runId: string): Promise<{

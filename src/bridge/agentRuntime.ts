@@ -353,14 +353,47 @@ export class AgentRuntime {
     return undefined;
   }
 
-  /** Serializes one validated unsolicited snapshot through the same verification path as collection. */
+  /** Serializes validated worker lifecycle observations through the runtime state machine. */
   private handleBrowserLifecycleEvent(event: BrowserLifecycleEvent): void {
-    if (event.type !== "chatgpt_worker_snapshot") return;
+    if (event.type === "ready") return;
     const owner = this.jobForWorkerTab(event.tabId);
     if (!owner) return;
     const { run, job } = owner;
     void this.enqueueRunOperation(run, async () => {
       if (job.tabId !== event.tabId) return;
+
+      if (event.type === "agent_worker_tab_removed") {
+        job.tabId = undefined;
+        if (typeof this.browser.forgetChatGptWorkerSnapshot === "function") {
+          this.browser.forgetChatGptWorkerSnapshot(event.tabId);
+        }
+
+        if (
+          job.state === "VERIFIED_DONE" ||
+          job.state === "FAILED_TERMINAL" ||
+          job.state === "CANCELLED"
+        ) {
+          return;
+        }
+
+        // cancelAgents marks cancellationRequested synchronously. When removal races
+        // cancellation, let the already-serialized cancellation path own the terminal
+        // state and exact lease release.
+        if (run.cancellationRequested) return;
+
+        const attempt = this.currentDispatchAttempt(run, job);
+        job.retryRequested = false;
+        job.error = {
+          code: "WORKER_TAB_CLOSED",
+          message: "Agent Runtime worker tab was closed before completion",
+          retryable: false,
+        };
+        job.state = "FAILED_TERMINAL";
+        if (attempt) this.releaseDispatchAttempt(attempt);
+        await this.schedule();
+        return;
+      }
+
       const attempt = this.currentDispatchAttempt(run, job);
       if (!attempt || !this.acceptFreshSnapshot(job, event.snapshot)) return;
       const outcome = this.acceptWorkerSnapshot(attempt, event.snapshot);
