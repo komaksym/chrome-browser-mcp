@@ -316,7 +316,7 @@ export function createBrowserMcpServer(browser, agentRuntime = new AgentRuntime(
         description: "Open an absolute HTTP(S) URL in a new normal tab.",
         inputSchema: {
             url: z.string().url().max(20_000),
-            active: z.boolean().default(true),
+            active: z.boolean().optional().describe("Set true only when the new tab must become active; omitted tabs open in the background"),
         },
         annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     }, async (args) => {

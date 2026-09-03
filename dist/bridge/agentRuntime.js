@@ -748,17 +748,6 @@ export class AgentRuntime {
             return undefined;
         }
     }
-    /** Restores the previously active normal tab after activation-based worker recovery when possible. */
-    async restoreActiveTab(tabId) {
-        if (tabId === undefined)
-            return;
-        try {
-            await this.browser.request("activate_worker_tab", { tabId, allowNonWorker: true });
-        }
-        catch {
-            // Restoration is best-effort; recovery outcome must not be replaced by a focus error.
-        }
-    }
     /** Runs the bounded observation-only recovery ladder for a finished turn whose marker was not observed. */
     async recoverFinishedObservation(attempt, initial) {
         const { job } = attempt;
@@ -775,28 +764,7 @@ export class AgentRuntime {
         const reread = await this.recoveryAttempt(attempt, "bounded_reread", () => this.rereadWithBackoff(attempt, "backoff_reread", 3));
         if (!this.isDispatchAttemptActive(attempt) || Boolean(job.result))
             return;
-        let previousActiveTabId;
-        try {
-            const active = await this.browser.request("get_active_tab");
-            previousActiveTabId = active.tab.tabId;
-        }
-        catch {
-            // Active-tab restoration metadata is optional.
-        }
-        job.diagnostics.recovery_steps.push("activate_worker_tab");
-        let activated;
-        try {
-            activated = await this.recoveryAttempt(attempt, "activate_worker_tab", async () => {
-                await this.browser.request("activate_worker_tab", { tabId });
-                return this.rereadWithBackoff(attempt, "activated_reread", 2);
-            });
-        }
-        finally {
-            await this.restoreActiveTab(previousActiveTabId);
-        }
-        if (!this.isDispatchAttemptActive(attempt) || Boolean(job.result))
-            return;
-        const latest = activated ?? reread ?? initial;
+        const latest = reread ?? initial;
         if (this.generationDefinitelyFinished(latest)) {
             job.diagnostics.recovery_steps.push("reload_worker_tab");
             await this.recoveryAttempt(attempt, "reload_worker_tab", async () => {

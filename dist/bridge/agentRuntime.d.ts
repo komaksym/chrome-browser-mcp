@@ -21,9 +21,9 @@ interface WorkerTabState {
     discarded: boolean;
     status: string;
 }
-type RecoveryStep = "current_state" | "bounded_reread" | "activate_worker_tab" | "reload_worker_tab";
+type RecoveryStep = "current_state" | "bounded_reread" | "reload_worker_tab";
 interface ObservationDiagnostics {
-    observation_source?: "initial_read" | "streaming_snapshot" | "backoff_reread" | "activated_reread" | "reload_reread";
+    observation_source?: "initial_read" | "streaming_snapshot" | "backoff_reread" | "reload_reread";
     observation_state?: {
         ready: boolean;
         generating: boolean;
@@ -240,8 +240,6 @@ export declare class AgentRuntime {
     private recordRecoveryFailure;
     /** Runs one recovery step without allowing its error to escape into generic job failure handling. */
     private recoveryAttempt;
-    /** Restores the previously active normal tab after activation-based worker recovery when possible. */
-    private restoreActiveTab;
     /** Runs the bounded observation-only recovery ladder for a finished turn whose marker was not observed. */
     private recoverFinishedObservation;
     /** Reads and validates one worker response before exposing its bounded untrusted result. */
