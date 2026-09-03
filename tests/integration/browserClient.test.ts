@@ -257,4 +257,83 @@ describe("BrowserClient", () => {
       }),
     );
   });
+
+  it("publishes ready and validated worker snapshots through one lifecycle subscription", () => {
+    const fromExtension = new PassThrough();
+    const client = new BrowserClient(fromExtension, new PassThrough(), 2_000);
+    const events: unknown[] = [];
+    const lifecycleClient = client as unknown as {
+      subscribeLifecycle: (listener: (event: unknown) => void) => () => void;
+    };
+
+    expect(lifecycleClient.subscribeLifecycle).toBeTypeOf("function");
+    const unsubscribe = lifecycleClient.subscribeLifecycle((event) => events.push(event));
+
+    writeNativeMessage(fromExtension, {
+      type: "ready",
+      extensionVersion: "0.1.13",
+      extensionId: "test-extension",
+    });
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "chatgpt_worker_snapshot",
+      tabId: 42,
+      snapshot: {
+        ready: true,
+        generating: true,
+        latestUserText: "Summarize this",
+        latestUserTruncated: false,
+        latestAssistantText: "Working",
+        latestAssistantTruncated: false,
+        revision: 4,
+        timestamp: 1_700_000_000_004,
+      },
+    });
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "chatgpt_worker_snapshot",
+      tabId: 42,
+      snapshot: {
+        ready: true,
+        generating: false,
+        latestUserText: "Summarize this",
+        latestUserTruncated: false,
+        latestAssistantText: "Stale",
+        latestAssistantTruncated: false,
+        revision: 3,
+        timestamp: 1_700_000_000_003,
+      },
+    });
+
+    expect(events).toEqual([
+      {
+        type: "ready",
+        extensionVersion: "0.1.13",
+        extensionId: "test-extension",
+      },
+      {
+        type: "chatgpt_worker_snapshot",
+        tabId: 42,
+        snapshot: {
+          ready: true,
+          generating: true,
+          latestUserText: "Summarize this",
+          latestUserTruncated: false,
+          latestAssistantText: "Working",
+          latestAssistantTruncated: false,
+          revision: 4,
+          timestamp: 1_700_000_000_004,
+        },
+      },
+    ]);
+
+    unsubscribe();
+    writeNativeMessage(fromExtension, {
+      type: "ready",
+      extensionVersion: "0.1.13",
+      extensionId: "reconnected-extension",
+    });
+    expect(events).toHaveLength(2);
+  });
+
 });

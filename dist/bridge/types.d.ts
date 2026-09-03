@@ -35,6 +35,16 @@ export interface NativeChatGptWorkerSnapshotEvent {
     tabId: number;
     snapshot: ChatGptWorkerSnapshot;
 }
+/** Carries validated unsolicited browser lifecycle observations to runtime consumers. */
+export type BrowserLifecycleEvent = {
+    type: "ready";
+    extensionVersion: string;
+    extensionId: string;
+} | {
+    type: "chatgpt_worker_snapshot";
+    tabId: number;
+    snapshot: ChatGptWorkerSnapshot;
+};
 export type IncomingNativeMessage = NativeResponse | NativeReady | NativeChatGptWorkerSnapshotEvent;
 export interface TabSummary {
     tabId: number;
