@@ -784,7 +784,13 @@ function scheduleReconnect() {
   reconnectDelay = Math.min(reconnectDelay * 2, 3e4);
 }
 chrome.tabs.onRemoved.addListener((tabId) => {
-  knownAgentWorkerTabIds.delete(tabId);
+  workerSnapshots.delete(tabId);
+  if (!knownAgentWorkerTabIds.delete(tabId)) return;
+  nativePort?.postMessage({
+    type: "event",
+    event: "agent_worker_tab_removed",
+    tabId
+  });
 });
 chrome.runtime.onInstalled.addListener(connectNative);
 chrome.runtime.onStartup.addListener(connectNative);
