@@ -209,6 +209,33 @@ describe("extension background worker commands", () => {
     });
   });
 
+  it("opens new tabs in the background by default while allowing explicit foreground focus", async () => {
+    (chromeApi.tabs.create as unknown as { mockResolvedValue: (value: chrome.tabs.Tab) => void }).mockResolvedValue({
+      id: 89,
+      url: "https://example.com/",
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 9,
+      index: 1,
+    } as chrome.tabs.Tab);
+
+    const backgroundResponse = await request("new_tab", { url: "https://example.com/" });
+    expect(backgroundResponse.error).toBeUndefined();
+    expect(chromeApi.tabs.create).toHaveBeenLastCalledWith({
+      url: "https://example.com/",
+      active: false,
+    });
+
+    const foregroundResponse = await request("new_tab", { url: "https://example.com/", active: true });
+    expect(foregroundResponse.error).toBeUndefined();
+    expect(chromeApi.tabs.create).toHaveBeenLastCalledWith({
+      url: "https://example.com/",
+      active: true,
+    });
+  });
+
   it("opens an agent worker in the stored parent window with the parent as opener", async () => {
     const parent = {
       id: 47,
