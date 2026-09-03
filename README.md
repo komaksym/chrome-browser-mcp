@@ -14,6 +14,8 @@ The bridge exposes 18 MCP tools:
 
 Action targets accept either a CSS selector or exact visible text / `aria-label` / placeholder / name / associated label text. Ambiguous targets fail instead of guessing.
 
+`new_tab` opens the requested URL in the background by default so it does not interrupt the user's current Chrome work. Set `active: true` only when foreground focus is explicitly required.
+
 The bridge does **not** expose cookies, local storage, session storage, saved passwords, hidden input values, arbitrary JavaScript execution, Chrome internal pages, or incognito tabs. It does not use the Chrome debugger API.
 
 ## Proven path

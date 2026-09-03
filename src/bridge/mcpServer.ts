@@ -396,10 +396,10 @@ export function createBrowserMcpServer(browser: BrowserClient, agentRuntime = ne
  "new_tab",
  {
  title: "Open Chrome tab",
- description: "Open an absolute HTTP(S) URL in a new normal tab.",
+ description: "Open an absolute HTTP(S) URL in a new normal background tab. Set active to true when foreground focus is explicitly required.",
  inputSchema: {
  url: z.string().url().max(20_000),
- active: z.boolean().default(true),
+ active: z.boolean().default(false).describe("Whether the new tab should become active; defaults to false."),
  },
  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
  },

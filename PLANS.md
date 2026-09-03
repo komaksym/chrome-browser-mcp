@@ -43,3 +43,42 @@ Ephemeral observer -- bounded + monotonic --> snapshot event
   virtualization retention.
 - `BrowserClient` and MCP/AgentRuntime: event transport, freshness, identity,
   completion-marker validation, and snapshot-only completion.
+
+# Issue #19: Background new tabs
+
+## Objective
+
+Keep user-created MCP tabs in the background by default while preserving an
+explicit `active: true` opt-in for actions that require foreground focus.
+
+## Milestones
+
+1. Cover the MCP and extension tab-opening seams with default-background and
+   explicit-foreground regression tests.
+2. Change the public default and extension fallback, then document the focus
+   behavior and bump the patch version.
+3. Regenerate runtime artifacts and run the complete validation suite.
+
+## System-level completion DAG
+
+```text
+MCP new_tab request
+        |
+        v
+active omitted -> false; active: true -> true
+        |
+        v
+Native bridge -> chrome.tabs.create({ active })
+        |                         |
+        v                         v
+background tab              explicit foreground tab
+keeps user's focus          becomes active when requested
+```
+
+## Test seams
+
+- MCP HTTP `new_tab`: schema defaulting and explicit foreground forwarding.
+- Extension native `new_tab`: Chrome tab-creation options for omitted and
+  explicit `active` values.
+- Live Chrome E2E: active-tab identity remains stable for background opens and
+  changes only for an explicit foreground request.

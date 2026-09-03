@@ -215,6 +215,39 @@ describe("extension background worker commands", () => {
     });
   });
 
+  it("opens tabs in the background by default but honors an explicit foreground request", async () => {
+    const backgroundTab = {
+      id: 88,
+      url: "https://example.com/background",
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 9,
+      index: 0,
+    } as chrome.tabs.Tab;
+    const foregroundTab = { ...backgroundTab, id: 89, url: "https://example.com/foreground", active: true };
+    const createMock = chromeApi.tabs.create as unknown as {
+      mockResolvedValueOnce: (value: chrome.tabs.Tab) => unknown;
+    };
+    createMock.mockResolvedValueOnce(backgroundTab);
+    createMock.mockResolvedValueOnce(foregroundTab);
+
+    const backgroundResponse = await request("new_tab", { url: backgroundTab.url });
+    const foregroundResponse = await request("new_tab", { url: foregroundTab.url, active: true });
+
+    expect(backgroundResponse.error).toBeUndefined();
+    expect(foregroundResponse.error).toBeUndefined();
+    expect(chromeApi.tabs.create).toHaveBeenNthCalledWith(1, {
+      url: backgroundTab.url,
+      active: false,
+    });
+    expect(chromeApi.tabs.create).toHaveBeenNthCalledWith(2, {
+      url: foregroundTab.url,
+      active: true,
+    });
+  });
+
   it("opens an agent worker in the stored parent window with the parent as opener", async () => {
     const parent = {
       id: 47,
