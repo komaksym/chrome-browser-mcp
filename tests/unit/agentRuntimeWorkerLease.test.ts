@@ -163,10 +163,11 @@ describe("AgentRuntime worker lease behavior", () => {
     expect(openCalls).toBe(2);
   });
 
-  it("keeps cancellation release idempotent while queued work starts exactly once", async () => {
+  it("keeps cancellation release idempotent without disturbing a newer dispatch lease", async () => {
+    const submitted = new Map<number, string>();
     let openCalls = 0;
     const browser = {
-      request: (method: string) => {
+      request: (method: string, args: Record<string, unknown> = {}) => {
         if (method === "resolve_chatgpt_anchor") {
           return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
         }
@@ -174,7 +175,20 @@ describe("AgentRuntime worker lease behavior", () => {
           openCalls += 1;
           return Promise.resolve({ tab: { tabId: openCalls } });
         }
-        if (method === "chatgpt_worker_submit") return Promise.resolve({ submitted: true });
+        if (method === "chatgpt_worker_submit") {
+          submitted.set(args.tabId as number, args.prompt as string);
+          return Promise.resolve({ submitted: true });
+        }
+        if (method === "read_chatgpt_worker") {
+          const prompt = submitted.get(args.tabId as number);
+          if (!prompt) throw new Error("missing submitted prompt");
+          return Promise.resolve({
+            ready: true,
+            generating: false,
+            latestUserText: prompt,
+            latestAssistantText: `done\n${completionMarker(prompt)}`,
+          });
+        }
         if (method === "close_tab") return Promise.resolve({ closed: true });
         return Promise.resolve({});
       },
@@ -190,6 +204,10 @@ describe("AgentRuntime worker lease behavior", () => {
     expect(openCalls).toBe(2);
 
     await runtime.cancelAgents(first.run_id);
+    expect(openCalls).toBe(2);
+
+    const completedSecond = await runtime.collectAgents(second.run_id);
+    expect(completedSecond.state).toBe("COMPLETE");
     expect(openCalls).toBe(2);
   });
 });

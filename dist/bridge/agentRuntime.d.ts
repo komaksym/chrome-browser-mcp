@@ -33,9 +33,12 @@ interface ObservationDiagnostics {
     recovery_steps: RecoveryStep[];
     uncertainty_reason?: string;
 }
+declare const workerLeaseIdBrand: unique symbol;
+type WorkerLeaseId = string & {
+    readonly [workerLeaseIdBrand]: true;
+};
 interface WorkerLease {
-    leaseId: string;
-    acquiredAt: number;
+    leaseId: WorkerLeaseId;
 }
 interface AgentJob {
     jobId: string;
@@ -191,13 +194,19 @@ export declare class AgentRuntime {
     private isDispatchEligible;
     /** Acquires a unique capacity lease for one dispatch attempt before browser work starts. */
     private acquireWorkerLease;
-    /** Returns whether async work still belongs to the dispatch attempt it started under. */
+    /** Captures the currently owned lease as one attempt context for async collection or retry work. */
+    private currentDispatchAttempt;
+    /** Returns whether this exact dispatch attempt still owns its lease and has not been cancelled. */
+    private isDispatchAttemptActive;
+    /** Returns whether async work still owns the exact worker lease it started under. */
     private ownsWorkerLease;
-    /** Releases only the expected dispatch lease; duplicate or stale releases are harmless. */
+    /** Releases only the expected worker lease; duplicate or stale releases are harmless. */
     private releaseWorkerLease;
-    /** Opens a private worker tab when needed and submits under one exact dispatch lease. */
+    /** Releases only the lease captured by this dispatch attempt. */
+    private releaseDispatchAttempt;
+    /** Opens a private worker tab when needed and submits under one exact dispatch attempt. */
     private dispatch;
-    /** Records failure only for the dispatch lease that started the asynchronous work. */
+    /** Records failure only for the dispatch attempt that started the asynchronous work. */
     private failJob;
     /** Cancels every unfinished job while preserving already verified or terminal outcomes. */
     private cancelRun;
