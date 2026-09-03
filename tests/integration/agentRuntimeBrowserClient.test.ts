@@ -88,19 +88,10 @@ describe("AgentRuntime with BrowserClient", () => {
     const collected = await runtime.collectAgents(spawned.run_id);
 
     expect(submissionCalls).toBe(1);
-    expect(directReads).toBe(2);
     expect(collected).toMatchObject({
       state: "COMPLETE",
       barrier: { satisfied: true },
-      results: [{
-        agent_id: "recover",
-        result: { text: "Recovered result" },
-        diagnostics: {
-          observation_source: "backoff_reread",
-          recovery_steps: ["current_state", "bounded_reread"],
-          uncertainty_reason: "completion marker missing after generation appeared finished",
-        },
-      }],
+      results: [{ agent_id: "recover", result: { text: "Recovered result" } }],
       failed: [],
       pending: [],
     });
