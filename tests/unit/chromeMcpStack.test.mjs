@@ -44,4 +44,43 @@ describe("startChromeMcpStack", () => {
       await rm(sandbox, { recursive: true, force: true });
     }
   });
+
+  it("restores earlier native-host registrations when provisioning fails partway", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "chrome-mcp-stack-partial-cleanup-"));
+    const homeDir = join(sandbox, "home");
+    const nativeHostDir = join(sandbox, "native-hosts");
+    const blockedNativeHostDir = join(sandbox, "not-a-directory");
+    const manifestPath = join(nativeHostDir, `${NATIVE_HOST_NAME}.json`);
+    const originalManifest = '{"sentinel":"keep-me-too"}\n';
+    const oldNativeHostDir = process.env.CHROME_NATIVE_HOST_DIR;
+    const oldNativeHostDirs = process.env.CHROME_NATIVE_HOST_DIRS;
+
+    delete process.env.CHROME_NATIVE_HOST_DIR;
+    delete process.env.CHROME_NATIVE_HOST_DIRS;
+
+    try {
+      await mkdir(nativeHostDir, { recursive: true });
+      await writeFile(manifestPath, originalManifest);
+      await writeFile(blockedNativeHostDir, "block mkdir");
+
+      await expect(
+        startChromeMcpStack({
+          root: sandbox,
+          homeDir,
+          profileDir: join(sandbox, "profile"),
+          chromePath: join(sandbox, "missing-chrome"),
+          nativeHostDirs: [nativeHostDir, blockedNativeHostDir],
+          provisionNativeHost: true,
+        }),
+      ).rejects.toThrow();
+
+      expect(await readFile(manifestPath, "utf8")).toBe(originalManifest);
+    } finally {
+      if (oldNativeHostDir === undefined) delete process.env.CHROME_NATIVE_HOST_DIR;
+      else process.env.CHROME_NATIVE_HOST_DIR = oldNativeHostDir;
+      if (oldNativeHostDirs === undefined) delete process.env.CHROME_NATIVE_HOST_DIRS;
+      else process.env.CHROME_NATIVE_HOST_DIRS = oldNativeHostDirs;
+      await rm(sandbox, { recursive: true, force: true });
+    }
+  });
 });
