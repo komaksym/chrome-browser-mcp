@@ -6,32 +6,21 @@ import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const { instances } = JSON.parse(
+  readFileSync(new URL("../../scripts/instances.json", import.meta.url), "utf8"),
+) as {
+  instances: Array<{
+    hostName: string;
+    wrapper: string;
+    extensionId: string;
+    port: number;
+  }>;
+};
 
 function writeExecutable(path: string, content: string): void {
   writeFileSync(path, content, "utf8");
   chmodSync(path, 0o755);
 }
-
-const instances = [
-  {
-    manifest: "com.komaksym.chrome_browser_mcp.json",
-    wrapper: "native-host-wrapper.sh",
-    origin: "chrome-extension://jlpddlfiallighiohmhhkemgbhofpnha/",
-    port: "2091",
-  },
-  {
-    manifest: "com.komaksym.chrome_browser_mcp_2.json",
-    wrapper: "native-host-wrapper-2.sh",
-    origin: "chrome-extension://doommfidfcljgehkppgiinjdjnafcmdc/",
-    port: "2093",
-  },
-  {
-    manifest: "com.komaksym.chrome_browser_mcp_3.json",
-    wrapper: "native-host-wrapper-3.sh",
-    origin: "chrome-extension://cjfkelmiakmoanljhleaahajdichbemn/",
-    port: "2095",
-  },
-];
 
 describe("macOS native host installer", () => {
   it("installs one isolated wrapper and manifest per Chrome instance", () => {
@@ -67,16 +56,17 @@ describe("macOS native host installer", () => {
       });
 
       expect(install.status, install.stdout + "\n" + install.stderr).toBe(0);
-      const topology = JSON.parse(
+      const installedTopology = JSON.parse(
         readFileSync(join(home, "Library/Application Support/Chrome Browser MCP/instances.json"), "utf8"),
       ) as { instances: unknown[] };
-      expect(topology.instances).toHaveLength(3);
+      expect(installedTopology.instances).toEqual(instances);
 
       for (const instance of instances) {
+        const origin = `chrome-extension://${instance.extensionId}/`;
         const manifestPath = join(
           home,
           "Library/Application Support/Google/Chrome/NativeMessagingHosts",
-          instance.manifest,
+          `${instance.hostName}.json`,
         );
         const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
           path: string;
@@ -89,16 +79,16 @@ describe("macOS native host installer", () => {
         );
 
         expect(manifest.path).toBe(installedWrapper);
-        expect(manifest.allowed_origins).toEqual([instance.origin]);
+        expect(manifest.allowed_origins).toEqual([origin]);
         const wrapperContent = readFileSync(installedWrapper, "utf8");
         expect(wrapperContent).not.toContain("/usr/bin/env node");
-        expect(wrapperContent).toContain("CHROME_MCP_PORT=\"" + instance.port + "\"");
-        expect(wrapperContent).toContain("CHROME_MCP_EXPECTED_ORIGIN=\"" + instance.origin + "\"");
+        expect(wrapperContent).toContain(`CHROME_MCP_PORT=\"${instance.port}\"`);
+        expect(wrapperContent).toContain(`CHROME_MCP_EXPECTED_ORIGIN=\"${origin}\"`);
         expect(wrapperContent).toContain(
           "# chrome-browser-mcp-bridge-base64: " + Buffer.from(join(repoRoot, "dist/bridge/index.js")).toString("base64"),
         );
 
-        const launch = spawnSync(installedWrapper, [instance.origin], {
+        const launch = spawnSync(installedWrapper, [origin], {
           cwd: repoRoot,
           env: {
             HOME: home,
@@ -112,7 +102,7 @@ describe("macOS native host installer", () => {
         expect(launch.status, launch.stdout + "\n" + launch.stderr).toBe(0);
         expect(readFileSync(captureFile, "utf8").trim().split("\n")).toEqual([
           join(repoRoot, "dist/bridge/index.js"),
-          instance.origin,
+          origin,
         ]);
       }
     } finally {
@@ -130,7 +120,7 @@ describe("macOS native host installer", () => {
 
     try {
       for (const instance of instances) {
-        writeFileSync(join(manifestDir, instance.manifest), "owned\n");
+        writeFileSync(join(manifestDir, `${instance.hostName}.json`), "owned\n");
         writeFileSync(join(appDir, instance.wrapper), "owned\n");
       }
       writeFileSync(join(manifestDir, "com.komaksym.chrome_browser_mcp_backup.json"), "unmanaged\n");
@@ -145,7 +135,7 @@ describe("macOS native host installer", () => {
 
       expect(uninstall.status, uninstall.stdout + "\n" + uninstall.stderr).toBe(0);
       for (const instance of instances) {
-        expect(existsSync(join(manifestDir, instance.manifest))).toBe(false);
+        expect(existsSync(join(manifestDir, `${instance.hostName}.json`))).toBe(false);
         expect(existsSync(join(appDir, instance.wrapper))).toBe(false);
       }
       expect(existsSync(join(appDir, "instances.json"))).toBe(false);
