@@ -48,6 +48,41 @@ describe("configure-tunnel instance routing", () => {
     }
   });
 
+  it("forwards --force when replacing an existing profile", () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "chrome-browser-mcp-configure-force-"));
+    const fakeBin = join(sandbox, "bin");
+    const capture = join(sandbox, "tunnel-args.txt");
+    const nodeBinDir = dirname(process.execPath);
+    const tunnelId = "tunnel_0123456789abcdef0123456789abcdef";
+    const newline = String.fromCharCode(10);
+    mkdirSync(fakeBin, { recursive: true });
+    writeExecutable(
+      join(fakeBin, "tunnel-client"),
+      ["#!/bin/bash", "printf '%s\\n' \"$@\" > \"$CAPTURE_FILE\""].join(newline),
+    );
+
+    try {
+      const result = spawnSync("bash", ["scripts/configure-tunnel.sh", tunnelId, "chrome2", "--force"], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${nodeBinDir}:/usr/bin:/bin`,
+          CAPTURE_FILE: capture,
+        },
+        encoding: "utf8",
+      });
+
+      expect(result.status, [result.stdout, result.stderr].join(newline)).toBe(0);
+      const args = readFileSync(capture, "utf8");
+      expect(args).toContain(["--profile", "chrome-browser-mcp-2", ""].join(newline));
+      expect(args).toContain(["--force", ""].join(newline));
+      expect(args).toContain(["--mcp-server-url", "http://127.0.0.1:2093/mcp", ""].join(newline));
+      expect(result.stdout).toContain("replaced");
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a tunnel-like profile name instead of accepting arbitrary routing", () => {
     const result = spawnSync("bash", [
       "scripts/configure-tunnel.sh",

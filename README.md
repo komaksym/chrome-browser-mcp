@@ -180,6 +180,14 @@ matching instance argument:
 ./scripts/configure-tunnel.sh tunnel_<agent-id> chrome3
 ~~~
 
+If a named local profile already exists and must be repointed to a new tunnel,
+append `--force`; this replaces only the local profile file and does not delete
+the old remote tunnel:
+
+```bash
+./scripts/configure-tunnel.sh tunnel_<new-id> chrome2 --force
+```
+
 All three tunnel clients may use the same control-plane API key. The
 CONTROL_PLANE_API_KEY_2 and CONTROL_PLANE_API_KEY_AGENT names are separate
 environment references only; they may contain the same value.

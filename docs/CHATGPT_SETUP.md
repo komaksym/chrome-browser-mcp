@@ -56,6 +56,10 @@ tunnel-client doctor --profile chrome-browser-mcp-2 --explain
 tunnel-client run --profile chrome-browser-mcp-2
 ```
 
+If `chrome-browser-mcp-2` was configured previously, append `--force` to the
+configure command to replace its local tunnel mapping. This does not delete the
+previous remote tunnel.
+
 For the agent profile:
 
 ```bash
