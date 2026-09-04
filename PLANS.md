@@ -44,6 +44,45 @@ Ephemeral observer -- bounded + monotonic --> snapshot event
 - `BrowserClient` and MCP/AgentRuntime: event transport, freshness, identity,
   completion-marker validation, and snapshot-only completion.
 
+# Issue #19: Background new tabs
+
+## Objective
+
+Keep user-created MCP tabs in the background by default while preserving an
+explicit `active: true` opt-in for actions that require foreground focus.
+
+## Milestones
+
+1. Cover the MCP and extension tab-opening seams with default-background and
+   explicit-foreground regression tests.
+2. Change the public default and extension fallback, then document the focus
+   behavior and bump the patch version.
+3. Regenerate runtime artifacts and run the complete validation suite.
+
+## System-level completion DAG
+
+```text
+MCP new_tab request
+        |
+        v
+active omitted -> false; active: true -> true
+        |
+        v
+Native bridge -> chrome.tabs.create({ active })
+        |                         |
+        v                         v
+background tab              explicit foreground tab
+keeps user's focus          becomes active when requested
+```
+
+## Test seams
+
+- MCP HTTP `new_tab`: schema defaulting and explicit foreground forwarding.
+- Extension native `new_tab`: Chrome tab-creation options for omitted and
+  explicit `active` values.
+- Live Chrome E2E: active-tab identity remains stable for background opens and
+  changes only for an explicit foreground request.
+
 # Issue #27: Reconcile stale worker leases
 
 ## Objective
@@ -103,138 +142,3 @@ blocked scheduler pass OR browser ready after reconnect
   global slot and dispatches queued work without collection being the trigger.
 - Existing lifecycle event validation: generating, stale, mismatched, and
   malformed evidence must retain capacity and avoid oversubscription.
-
-# Issue #37: Strict two-worker live ChatGPT code-review smoke
-
-## Summary
-
-Add a separate opt-in headed-Chrome test that submits the strict
-`@skills-mcp /code-review` request through a fresh real ChatGPT conversation.
-The parent must route through the configured MCP app, create exactly two new
-independent worker conversations, and return a verified two-result barrier for
-the configured canary PR. The test owns only the tabs and browser state it
-creates, and preserves bounded diagnostics on failure.
-
-## Milestones
-
-1. Add public live-run helpers for canary pinning, strict prompt construction,
-   target correlation, profile isolation, and sanitized diagnostics.
-2. Add the live headed-Chrome runner using the real composer/send UI and the
-   existing native-host/MCP startup seam; keep worker creation and collection
-   exclusively parent-driven through ChatGPT.
-3. Add focused helper tests and document the one-command opt-in setup,
-   authentication, tunnel, cleanup, and artifact rules.
-4. Run focused tests, typecheck, lint, the full test suite, artifact/version
-   checks, and the available deterministic E2E; review and commit.
-
-## System-level completion DAG
-
-```text
-configured canary PR
-        |
-        v
-unique run identity + pinned base/head
-        |
-        v
-fresh real ChatGPT parent composer
-        |
-        v
-@skills-mcp /code-review -> configured chrome-mcp tunnel
-        |
-        v
-exactly two new worker targets in parent window
-        |
-        +--> distinct worker prompts + completion evidence
-        |
-        v
-parent collect_agents barrier.satisfied=true
-        |
-        v
-parent response contains both results -> owned cleanup/diagnostics
-```
-
-## Test seams
-
-- Pure live-run helpers: prompt/canary construction, target-delta
-  correlation, configuration isolation, and URL/diagnostic sanitization.
-- Real Playwright/CDP page: fresh parent creation, visible composer submission,
-  worker target creation, background visibility, and parent result delivery.
-- Direct MCP calls only for setup/status and read-only focus diagnostics; the
-  acceptance path never calls `spawn_agents`, `collect_agents`, or
-  `cancel_agents` from the test itself.
-
-# Dual Chrome profiles: second extension/host/port flavor (0.1.18)
-
-## TLDR
-
-1. Scope: run two isolated bridges at once — profile 1 keeps extension
-   `jlpddlfiallighiohmhhkemgbhofpnha` on `:2091`, profile 2 gets a new
-   extension `doommfidfcljgehkppgiinjdjnafcmdc` on `:2093`. No behavior change
-   for single-instance users.
-2. Out of scope: sharing one tunnel across two ChatGPT accounts (tunnels are
-   org-scoped); a second ChatGPT account still needs its own tunnel ID, and
-   only one `verify:local` target per command.
-3. Single source of truth: new `scripts/instances.json` (ports, host names,
-   extension IDs, public keys, dist dirs). Build, installer, and verifier all
-   read it — no new hardcoded copies.
-4. Deferred: e2e coverage for instance 2 (instance-1 e2e is the regression
-   gate); per-profile auto port fallback (rejected — nondeterministic
-   profile-to-port mapping would cross wire two accounts' tabs).
-
-## High-Level Flow
-
-```text
-scripts/instances.json
-  +-- build-extension.mjs --> dist/extension + dist/extension2 (per-flavor HOST_NAME define)
-  +-- install-macos.sh --> 2 wrappers (baked CHROME_MCP_PORT + EXPECTED_ORIGIN) + 2 host manifests
-  +-- verify-local.mjs --> port-keyed expected extension-ID assertion
-Chrome profile 1 (ext 1) -> host 1 -> bridge :2091 -> tunnel chrome-browser-mcp -> ChatGPT acct 1
-Chrome profile 2 (ext 2) -> host 2 -> bridge :2093 -> tunnel chrome-browser-mcp-2 -> ChatGPT acct 2
-```
-
-## Milestones
-
-1. `instances.json`, build both flavors, `HOST_NAME` define with test-safe
-   fallback, `CHROME_MCP_EXPECTED_ORIGIN` in the bridge.
-2. Installer/uninstaller for both manifests/wrappers; `configure-tunnel.sh`
-   accepts profile + URL for the second tunnel.
-3. Verifier asserts the expected extension ID per port; `verify:local2` script.
-4. Unit tests (installer both flavors, instances consistency, host fallback,
-   tracked artifacts incl. `dist/extension2/*`); bump to 0.1.18; rebuild dist;
-   README + CHATGPT_SETUP dual-profile docs.
-5. Run typecheck, lint, vitest, artifacts/version checks; e2e if a browser is
-   available. Commit (dist is tracked runtime) only on explicit approval.
-
-# Three logical Chrome instances: fixed routing for current, subscription, and agent profiles
-
-## Summary
-
-Extend the existing two-flavor topology to three explicitly named Chrome
-instances. Each instance owns one extension/native-host flavor, one loopback
-port, and one machine-local tunnel profile. Configuration commands derive all
-routing values from `instances.json` so a tunnel cannot be pointed at another
-instance's browser port by accident.
-
-## System-level completion DAG
-
-```text
-instances.json
-  +--> build + install --> extension/native host flavor N
-  +--> configure tunnel --> profile N -> fixed loopback port N
-  +--> verify local ----> expected extension identity
-                              |
-                              v
-                     ChatGPT account N
-```
-
-## Milestones
-
-1. Add the third stable extension key/ID and port `2095`; keep `2092` reserved
-   for Skills MCP and preserve existing IDs/ports.
-2. Make tunnel configuration instance-name driven and reject arbitrary
-   profile/URL combinations that can cross-route browser access.
-3. Extend installer, verifier, tests, tracked artifacts, and setup docs for
-   the third instance; document that one matching flavor is loaded per Chrome
-   profile.
-4. Run focused tests, typecheck, lint, build, artifact/version checks, and
-   review without touching unrelated dirty changes.
