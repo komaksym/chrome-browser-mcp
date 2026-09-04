@@ -13,8 +13,6 @@ try {
 
   const endpoint = process.env.CHROME_MCP_URL ?? `http://127.0.0.1:${instance.port}/mcp`;
   const healthUrl = new URL("/healthz", endpoint);
-  const port = new URL(endpoint).port;
-  const expectedExtensionId = instances.find((candidate) => String(candidate.port) === port)?.extensionId;
 
   const response = await fetch(healthUrl, { signal: AbortSignal.timeout(5_000) });
   if (!response.ok) throw new Error(`health check returned HTTP ${response.status}`);
@@ -35,8 +33,8 @@ try {
     console.log(`Extension version: ${extensionVersion ?? "unknown"}`);
     console.log(`MCP version: ${mcpVersion ?? "unknown (stale bridge)"}`);
     console.log(`Tools (${names.length}): ${names.join(", ")}`);
-    if (expectedExtensionId && extensionId !== expectedExtensionId) {
-      throw new Error(`Wrong instance: expected extension ${expectedExtensionId} on this port, got ${extensionId}`);
+    if (extensionId !== instance.extensionId) {
+      throw new Error(`Wrong instance: expected extension ${instance.extensionId}, got ${extensionId}`);
     }
     if (!mcpVersion) throw new Error("MCP bridge is stale: it does not report its version");
     if (extensionVersion !== mcpVersion) {
