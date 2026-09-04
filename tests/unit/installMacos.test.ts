@@ -52,9 +52,13 @@ describe("macOS native host installer", () => {
         home,
         "Library/Application Support/Chrome Browser MCP/native-host-wrapper.sh",
       );
+      const wrapper = readFileSync(installedWrapper, "utf8");
 
       expect(manifest.path).toBe(installedWrapper);
-      expect(readFileSync(installedWrapper, "utf8")).not.toContain("/usr/bin/env node");
+      expect(wrapper).not.toContain("/usr/bin/env node");
+      expect(wrapper).toContain(
+        `# chrome-browser-mcp-bridge-base64: ${Buffer.from(join(repoRoot, "dist/bridge/index.js")).toString("base64")}`,
+      );
 
       const origin = "chrome-extension://jlpddlfiallighiohmhhkemgbhofpnha/";
       const launch = spawnSync(installedWrapper, [origin], {
