@@ -12,11 +12,6 @@ if [[ ! "$TUNNEL_ID" =~ ^tunnel_[0-9a-f]{32}$ ]]; then
   echo "Usage: $0 tunnel_<32 lowercase hex characters> [instance]" >&2
   exit 2
 fi
-if ! command -v tunnel-client >/dev/null 2>&1; then
-  echo "tunnel-client is not installed or not on PATH." >&2
-  echo "Download the supported binary from OpenAI Platform tunnel settings." >&2
-  exit 2
-fi
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js is required to resolve the checked-in Chrome instance topology." >&2
   exit 2
@@ -41,6 +36,12 @@ NODE
 }
 IFS=$'\t' read -r PROFILE PORT RUNTIME_KEY_ENV <<<"$INSTANCE_RECORD"
 MCP_SERVER_URL="http://127.0.0.1:$PORT/mcp"
+
+if ! command -v tunnel-client >/dev/null 2>&1; then
+  echo "tunnel-client is not installed or not on PATH." >&2
+  echo "Download the supported binary from OpenAI Platform tunnel settings." >&2
+  exit 2
+fi
 
 tunnel-client init \
   --sample sample_mcp_remote_no_auth \
