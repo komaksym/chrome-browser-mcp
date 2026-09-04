@@ -19,7 +19,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          expected_parent='b08fa3dcd44f5bc3f40a059c2a4c159ac12e5807'
+          expected_parent='73d5f01271d4d354124e3d44967b4d67d2448901'
           actual_parent="$(git rev-parse HEAD^)"
           if [[ "$actual_parent" != "$expected_parent" ]]; then
             echo "Unexpected helper parent: $actual_parent" >&2
@@ -37,12 +37,15 @@ jobs:
                   '"integrity": "sha512-MZyXUkZHjQxUvzK7rN8DJ3SRmrVrke8ZyRusHlP+kuwqTcfWLyqMOE3sScPPyeIXN/mDJIfGXvcMqCgYKekoQ=="',
                   '"integrity": "sha512-MZyXUkZHjQxUvzK7rN8DJ3SRmrVrke8ZyRusHlP+kuwqTcfWLyqMOE3sScPPyeIXN/mDJIfGXvcMqCgYKekoQw=="',
               ),
-              ('"type-check": "~0.4.0"', '"type-check": "^0.4.0"'),
+              (
+                  '        "prelude-ls": "^1.2.1",\n        "type-check": "~0.4.0",\n        "word-wrap": "^1.2.5"',
+                  '        "prelude-ls": "^1.2.1",\n        "type-check": "^0.4.0",\n        "word-wrap": "^1.2.5"',
+              ),
           ]
           for old, new in replacements:
               count = text.count(old)
               if count != 1:
-                  raise SystemExit(f'Expected exactly one occurrence of {old!r}, found {count}')
+                  raise SystemExit(f'Expected exactly one occurrence of targeted lockfile fragment, found {count}')
               text = text.replace(old, new)
           path.write_text(text)
 
