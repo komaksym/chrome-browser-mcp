@@ -190,6 +190,16 @@ export declare class AgentRuntime {
     private cancelAndSchedule;
     /** Runs the scheduler while holding its serialized operation slot. */
     private pumpScheduler;
+    /** Returns whether blocked global capacity has at least one job ready to dispatch. */
+    private hasDispatchEligibleJob;
+    /** Reconciles leased worker tabs against one current browser tab observation. */
+    private reconcileWorkerLeases;
+    /** Reads current tab metadata without treating a malformed or failed observation as proof of absence. */
+    private currentBrowserTabIds;
+    /** Queries current worker state for reconciliation, bypassing an observation that may now be stale. */
+    private readCurrentSnapshot;
+    /** Applies the shared terminal transition for a missing current worker tab. */
+    private terminalizeWorkerTabClosed;
     /** Reserves all currently available global and per-run worker slots before starting browser operations. */
     private reserveAvailableJobs;
     /** Returns the number of jobs holding an active-worker lease across all runs. */
@@ -224,6 +234,8 @@ export declare class AgentRuntime {
     private isWorkerSnapshot;
     /** Returns the latest fresh snapshot from the event cache or the extension query seam. */
     private readFreshSnapshot;
+    /** Requests and validates one newer worker snapshot after a caller-selected revision. */
+    private requestFreshSnapshot;
     /** Records a snapshot revision only when it is newer than the post-submit observation baseline. */
     private acceptFreshSnapshot;
     /** Applies the same identity, generation, and completion-marker rules to one fresh snapshot. */
