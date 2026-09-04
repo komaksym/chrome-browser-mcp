@@ -15,6 +15,8 @@ The live preflight deliberately does not use the normal Chrome MCP endpoint or y
 
 The runner rejects profiles inside this repository and known normal Chrome profile trees. It also fails if the isolated MCP port is already occupied instead of attaching to an existing bridge.
 
+The tunnel process is pinned to the live bridge endpoint at invocation time, even if the saved tunnel profile contains another MCP URL. Shell-level tunnel/profile selectors and `CONTROL_PLANE_TUNNEL_ID` are stripped before `tunnel-client` starts, so a personal Chrome MCP shell configuration cannot silently redirect the live run. The dedicated profile still supplies its own tunnel ID and other non-secret profile state; `CONTROL_PLANE_API_KEY` remains an explicit runtime credential supplied by the shell.
+
 ## 1. Install the native host and configure the dedicated tunnel once
 
 Install the current checkout's native host first:
