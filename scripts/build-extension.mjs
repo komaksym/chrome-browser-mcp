@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 const { version } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const { instances } = JSON.parse(await readFile(new URL("./instances.json", import.meta.url), "utf8"));
@@ -29,5 +29,4 @@ for (const instance of instances) {
     action: { default_title: instance.label }
   };
   await writeFile(`${instance.extensionDir}/manifest.json`, JSON.stringify(manifest, null, 2) + "\n");
-  await cp("extension-assets", `${instance.extensionDir}/assets`, { recursive: true });
 }
