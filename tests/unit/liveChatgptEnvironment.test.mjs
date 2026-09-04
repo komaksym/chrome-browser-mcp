@@ -7,6 +7,7 @@ import {
   assertRuntimeVersions,
   loadLiveSmokeConfig,
   parseCanary,
+  tunnelClientInvocation,
 } from "../e2e/support/live-chatgpt-environment.mjs";
 import { EXTENSION_ID } from "../e2e/support/chrome-mcp-stack.mjs";
 
@@ -50,6 +51,46 @@ describe("live ChatGPT smoke environment policy", () => {
         userHome: "/home/tester",
       }),
     ).toThrowError(expect.objectContaining({ category: LIVE_SMOKE_FAILURE.TUNNEL_APP }));
+  });
+
+  it("rejects malformed live endpoint ports instead of partially parsing them", () => {
+    expect(() =>
+      loadLiveSmokeConfig({
+        env: { LIVE_CHATGPT_MCP_PORT: "2191personal" },
+        root: "/workspace/repo",
+        userHome: "/home/tester",
+      }),
+    ).toThrowError(expect.objectContaining({ category: LIVE_SMOKE_FAILURE.ENDPOINT_COLLISION }));
+  });
+
+  it("pins tunnel-client to the isolated MCP endpoint without personal runtime overrides", () => {
+    const invocation = tunnelClientInvocation({
+      command: "run",
+      profile: "chrome-browser-mcp-live-smoke",
+      mcpUrl: "http://127.0.0.1:2191/mcp",
+      env: {
+        CONTROL_PLANE_API_KEY: "test-runtime-key",
+        CONTROL_PLANE_TUNNEL_ID: "tunnel_personal",
+        MCP_COMMAND: "personal-command",
+        MCP_SERVER_URL: "http://127.0.0.1:2091/mcp",
+        TUNNEL_CLIENT_CONFIG: "/tmp/personal.yaml",
+        TUNNEL_CLIENT_PROFILE: "chrome-browser-mcp",
+        TUNNEL_CLIENT_PROFILE_DIR: "/tmp/profiles",
+        TUNNEL_CLIENT_PROFILE_FILE: "/tmp/personal-profile.yaml",
+      },
+    });
+
+    expect(invocation.args).toEqual([
+      "run",
+      "--profile",
+      "chrome-browser-mcp-live-smoke",
+      "--mcp.server-url",
+      "http://127.0.0.1:2191/mcp",
+    ]);
+    expect(invocation.env).toEqual({
+      CONTROL_PLANE_API_KEY: "test-runtime-key",
+      TUNNEL_CLIENT_PROFILE_DIR: "/tmp/profiles",
+    });
   });
 
   it("validates the canary syntax", () => {
