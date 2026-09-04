@@ -1,0 +1,40 @@
+{
+  "instances": [
+    {
+      "name": "chrome",
+      "label": "Chrome Browser MCP",
+      "port": 2091,
+      "hostName": "com.komaksym.chrome_browser_mcp",
+      "extensionId": "jlpddlfiallighiohmhhkemgbhofpnha",
+      "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsN2PDxGGdi4kzCaNghCrqsG9k12qKj5zfmHsfJ2Aa4AnRSbAie0jy2nqwJtgEKxsZmWRff10BG5Br1GXBKY2NRIPZaIx5u2GO206nJIq8q2mvxbdRGiiPJiX0gskVGB/lLOGo3rg+AjELyUhm6yU9R27dnoOrMqjWM3GXy3UEa4ZfLm61Cli9u46liHLfCowr1AQm2+g2qaGdHBkBriPg/HqhgUYdIhFOepdiHS30BOm/OIy7U3mcQj0+NLmlACQHLqFFgUpQnhjj2pDOX9rzLvTDLBCtUzYPdK6CakDMsBEHrVyX3P1VWpodeH5RREp6Vr/5nRR78L+5n8L1GdLAwIDAQAB",
+      "extensionDir": "dist/extension",
+      "wrapper": "native-host-wrapper.sh",
+      "tunnelProfile": "chrome-browser-mcp",
+      "runtimeKeyEnv": "CONTROL_PLANE_API_KEY"
+    },
+    {
+      "name": "chrome2",
+      "label": "Chrome Browser MCP 2",
+      "port": 2093,
+      "hostName": "com.komaksym.chrome_browser_mcp_2",
+      "extensionId": "doommfidfcljgehkppgiinjdjnafcmdc",
+      "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAhZi5NH7Lyhbwmvf9reB1mHzxD+29wU1dGQX7dXU5FNo2cWJjoXvVSMcomF8u+XhhWtvXZBX9aQBY/6qAte8SFZdvNi0kyGLELwf+i5xOBvB6aQycvQVHBkK+wtv7Q6t1dP8MsjxNo7OG1/O0ddrKud9+7x+90L7cWZtm30NdMpjqBHtJ3Dj1Z9ycXu5yaBPkGzQwxBhGIDfvfJUK6Iw7Pq8590yhi9itwyGDI3gtOGD/lKQCmVPNGU1ngDAN+TL2AI9xGTg2u6nZvBH3y/2kKM5aXlozJVykOXs2lTM0mgFo/8YtLCG/k38cYGdzZBtXO0aNsZXCYlb/1wVpZppZ0wIDAQAB",
+      "extensionDir": "dist/extension2",
+      "wrapper": "native-host-wrapper-2.sh",
+      "tunnelProfile": "chrome-browser-mcp-2",
+      "runtimeKeyEnv": "CONTROL_PLANE_API_KEY_2"
+    },
+    {
+      "name": "chrome3",
+      "label": "Chrome Browser MCP Agent",
+      "port": 2095,
+      "hostName": "com.komaksym.chrome_browser_mcp_3",
+      "extensionId": "cjfkelmiakmoanljhleaahajdichbemn",
+      "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7bD0ixnCZS36BdSspFaIbozQhRAE0TEWnUYSmqNfmzHf7AeU/e8rg/QFZfM5M7hD62uLXF+uiyZvb+wxYEU9E6bjypq4iMKw8vlFtrOfgmK+/X+Nd8OhEHR1HW7r+5X6HU4aO6m6XnD/eflU9zGHA3MPdQRJwYNqAdtvwKEDmr5VSNFmNQMRwrOxYQuulxAdWkTRF2M5RObPymSq/FH6JewSZJVGMsCe0WPwGye/anrZ6I1aFd0QIExmbd2rI+GyR7g9VY+EntpaKEQQoDVvsMbMt0kJ/qnlYaMNOmqJAZTVbt34whD+PPbk5XExDTWZKRt4CTKZhYyg9E7PYVocmwIDAQAB",
+      "extensionDir": "dist/extension3",
+      "wrapper": "native-host-wrapper-3.sh",
+      "tunnelProfile": "chrome-browser-mcp-3",
+      "runtimeKeyEnv": "CONTROL_PLANE_API_KEY_AGENT"
+    }
+  ]
+}

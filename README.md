@@ -2,7 +2,7 @@
 
 A local bridge that lets a private ChatGPT developer-mode app inspect and control the tabs already open in your desktop Google Chrome.
 
-Current patch version: **0.1.17**. Every patch must bump this version; CI rejects patches that do not.
+Current patch version: **0.1.19**. Every patch must bump this version; CI rejects patches that do not.
 
 The bridge exposes 18 MCP tools:
 
@@ -77,25 +77,60 @@ Chrome 121+ is deliberate for agent-window anchoring: anchor selection uses `chr
 npm run install:mac
 ```
 
-This installs the native-host manifest at:
+This installs one native-host manifest per configured Chrome instance at:
 
 ```text
 ~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.komaksym.chrome_browser_mcp.json
+~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.komaksym.chrome_browser_mcp_2.json
+~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.komaksym.chrome_browser_mcp_3.json
 ```
 
-Then:
+The checked-in topology is fixed and intentionally boring:
+
+| Logical profile | Unpacked extension | Extension ID | Bridge | Tunnel profile |
+| --- | --- | --- | --- | --- |
+| Current | `dist/extension` | `jlpddlfiallighiohmhhkemgbhofpnha` | `127.0.0.1:2091` | `chrome-browser-mcp` |
+| New subscription | `dist/extension2` | `doommfidfcljgehkppgiinjdjnafcmdc` | `127.0.0.1:2093` | `chrome-browser-mcp-2` |
+| Agent | `dist/extension3` | `cjfkelmiakmoanljhleaahajdichbemn` | `127.0.0.1:2095` | `chrome-browser-mcp-3` |
+
+Then, in each separate Chrome profile:
+
+The Chrome profile itself does not need a Google account. The ChatGPT web
+session in the tabs you want to control does need to be signed in to the
+intended ChatGPT account.
 
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. Click **Load unpacked**.
-4. Select this repository's `dist/extension` directory.
-5. Confirm the extension ID is exactly:
+4. Select the matching unpacked extension directory from the table above.
+5. Confirm its extension ID matches the table exactly.
+
+For the current profile, the expected ID is:
 
 ```text
 jlpddlfiallighiohmhhkemgbhofpnha
 ```
 
 Do not proceed if the ID differs. The native host only accepts that exact extension origin.
+
+## 1b. Additional Chrome profiles
+
+Load exactly one matching flavor in each additional Chrome profile:
+
+- New subscription: `dist/extension2`, ID
+  `doommfidfcljgehkppgiinjdjnafcmdc`, port `2093` (`npm run verify:local2`).
+- Agent: `dist/extension3`, ID
+  `cjfkelmiakmoanljhleaahajdichbemn`, port `2095` (`npm run verify:local3`).
+
+Do not load multiple flavors in one Chrome profile: every loaded flavor can
+see and act on that profile's tabs. Do not load one flavor in multiple Chrome
+profiles either: those profiles would contend for the same native-host route.
+Instance topology (ports, host names, IDs, and tunnel profiles) is defined once
+in `scripts/instances.json`.
+The macOS installer also copies that topology to
+`~/Library/Application Support/Chrome Browser MCP/instances.json` so
+`mcps-launcher` can consume the same mapping without a second set of port or
+extension-ID constants.
 
 ## 2. Updating future patches
 
@@ -111,7 +146,7 @@ Then open `chrome://extensions` and click **Update**. Do not select the extensio
 
 `git pull` updates both `dist/extension` (what Chrome loads) and `dist/bridge` (what the native host executes). Clicking **Update** reloads the unpacked extension/native-messaging connection so the newly pulled runtime is used.
 
-The visible extension version must change on every patch. For this patch it must show **0.1.18**. If it still shows an older version, the pulled runtime was not applied.
+The visible extension version must change on every patch. For this patch it must show **0.1.19**. If it still shows an older version, the pulled runtime was not applied.
 
 ## 3. Verify the local browser chain
 
@@ -119,6 +154,8 @@ Keep Chrome open, then run:
 
 ```bash
 npm run verify:local
+npm run verify:local2
+npm run verify:local3
 ```
 
 A successful check prints:
@@ -164,6 +201,21 @@ http://127.0.0.1:2091/mcp
 
 Keep `tunnel-client run` active whenever ChatGPT needs the browser tools.
 
+For the second ChatGPT subscription and the agent profile, use separate tunnel
+IDs and separate runtime-key environment variables. The instance argument is
+required to keep the tunnel profile and loopback target coupled:
+
+```bash
+export CONTROL_PLANE_API_KEY_2="sk-..."
+./scripts/configure-tunnel.sh tunnel_<second-id> chrome2
+
+export CONTROL_PLANE_API_KEY_AGENT="sk-..."
+./scripts/configure-tunnel.sh tunnel_<agent-id> chrome3
+```
+
+Run `tunnel-client doctor` and `tunnel-client run` for each generated profile,
+or use `mcps all` after all three Chrome profiles and tunnel profiles are ready.
+
 ## 5. Add it to ChatGPT
 
 1. In ChatGPT, enable **Settings -> Security and login -> Developer mode**.
@@ -195,7 +247,11 @@ Read [`THREAT_MODEL.md`](THREAT_MODEL.md) and [`SECURITY_REVIEW.md`](SECURITY_RE
 
 ## Known limitations
 
-- One Chrome profile should load the extension at a time; two profiles can contend for port `2091`.
+- Each Chrome profile must load exactly one matching extension flavor:
+  `dist/extension` on `:2091`, `dist/extension2` on `:2093`, or
+  `dist/extension3` on `:2095`. Multiple flavors in one profile expose the
+  same tabs to multiple routes; the same flavor in multiple profiles makes
+  those routes contend for one port.
 - Chrome internal pages, Chrome Web Store pages, `file://` pages, and incognito tabs cannot be read or controlled.
 - Cross-origin iframes are not traversed.
 - Canvas-only applications and Chrome's built-in PDF viewer may return little semantic text.

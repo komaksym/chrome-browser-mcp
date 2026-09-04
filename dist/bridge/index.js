@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { BrowserClient } from "./browserClient.js";
 import { startHttpMcpServer } from "./mcpServer.js";
-const EXPECTED_ORIGIN = "chrome-extension://jlpddlfiallighiohmhhkemgbhofpnha/";
+const EXPECTED_ORIGIN = process.env.CHROME_MCP_EXPECTED_ORIGIN ?? "chrome-extension://jlpddlfiallighiohmhhkemgbhofpnha/";
 const origin = process.argv[2];
 if (process.env.CHROME_MCP_SKIP_ORIGIN_CHECK !== "1" && origin !== EXPECTED_ORIGIN) {
     process.stderr.write(`Rejected native messaging origin: ${origin}\n`);

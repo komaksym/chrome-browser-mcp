@@ -8,7 +8,7 @@ import { chromium } from "@playwright/test";
 
 export const EXTENSION_ID = "jlpddlfiallighiohmhhkemgbhofpnha";
 const NATIVE_HOST_NAME = "com.komaksym.chrome_browser_mcp";
-const RESERVED_MCP_PORTS = new Set([2091, 2093]);
+const RESERVED_MCP_PORTS = new Set([2091, 2093, 2095]);
 
 /** Returns unique non-empty strings while preserving their first-seen order. */
 function unique(values) {

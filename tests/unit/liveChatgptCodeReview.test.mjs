@@ -86,6 +86,13 @@ describe("live ChatGPT code-review workflow", () => {
         env: { LIVE_CHATGPT_TUNNEL_PROFILE: "chrome-browser-mcp" },
       }),
     ).toThrowError(LiveCodeReviewSetupError);
+    expect(() =>
+      loadLiveCodeReviewConfig({
+        root: repoRoot,
+        userHome: "/Users/tester",
+        env: { LIVE_CHATGPT_TUNNEL_PROFILE: "chrome-browser-mcp-3" },
+      }),
+    ).toThrowError(LiveCodeReviewSetupError);
   });
 
   it("correlates only new ChatGPT page targets with the current run", () => {

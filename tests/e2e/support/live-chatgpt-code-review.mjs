@@ -32,7 +32,7 @@ const GENERATING_SELECTOR =
 const CHATGPT_ORIGIN = "https://chatgpt.com";
 const DEFAULT_CANARY = "komaksym/chrome-browser-mcp#34";
 const DEFAULT_MCP_PORT = 2191;
-const NORMAL_MCP_PORTS = new Set([2091, 2093]);
+const NORMAL_MCP_PORTS = new Set([2091, 2093, 2095]);
 const RUNTIME_COMPLETION_MARKER_PATTERN = /<<<SUBAGENT_DONE:[A-Za-z0-9-]+>>>/g;
 const TUNNEL_ENV_OVERRIDES = [
   "CONTROL_PLANE_TUNNEL_ID",
@@ -146,7 +146,7 @@ export function loadLiveCodeReviewConfig({ env = process.env, root, userHome = h
     userHome,
   });
   const tunnelProfile = env.LIVE_CHATGPT_TUNNEL_PROFILE ?? "chrome-browser-mcp-live-smoke";
-  if (tunnelProfile === "chrome-browser-mcp" || tunnelProfile === "chrome-browser-mcp-2") {
+  if (tunnelProfile === "chrome-browser-mcp" || tunnelProfile === "chrome-browser-mcp-2" || tunnelProfile === "chrome-browser-mcp-3") {
     throw new LiveCodeReviewSetupError(
       LIVE_CODE_REVIEW_FAILURE.TUNNEL_APP,
       "LIVE_CHATGPT_TUNNEL_PROFILE must name a dedicated live-smoke tunnel profile",

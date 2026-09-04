@@ -26,9 +26,18 @@ Configure a dedicated tunnel profile, for example:
 
 ```bash
 export CONTROL_PLANE_API_KEY="sk-..."
-./scripts/configure-tunnel.sh tunnel_0123456789abcdef0123456789abcdef \
-  chrome-browser-mcp-live-smoke http://127.0.0.1:2191/mcp
+tunnel-client init \
+  --sample sample_mcp_remote_no_auth \
+  --profile chrome-browser-mcp-live-smoke \
+  --tunnel-id tunnel_0123456789abcdef0123456789abcdef \
+  --mcp-server-url http://127.0.0.1:2191/mcp \
+  --control-plane-api-key-ref env:CONTROL_PLANE_API_KEY
 ```
+
+The permanent `scripts/configure-tunnel.sh` command is intentionally limited
+to the three fixed Chrome instances; this live smoke uses a separate,
+run-specific bridge port and therefore configures its dedicated profile
+directly.
 
 Keep the API key in the shell environment. Do not put it in this repository or
 in a test artifact.
@@ -62,7 +71,7 @@ Useful overrides:
 
 The run also accepts `LIVE_CHATGPT_SKILLS_MCP_APP_LABEL` and
 `LIVE_CHATGPT_CHROME_MCP_APP_LABEL` when the visible ChatGPT app names differ.
-The normal bridge ports `2091` and `2093` are rejected to prevent accidentally
+The normal bridge ports `2091`, `2093`, and `2095` are rejected to prevent accidentally
 using a user's normal browser bridge.
 
 ## Failure evidence and safety

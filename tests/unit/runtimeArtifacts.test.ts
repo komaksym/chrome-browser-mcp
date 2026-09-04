@@ -4,6 +4,10 @@ import { describe, expect, it } from "vitest";
 const runtimeArtifacts = [
   "dist/extension/manifest.json",
   "dist/extension/background.js",
+  "dist/extension2/manifest.json",
+  "dist/extension2/background.js",
+  "dist/extension3/manifest.json",
+  "dist/extension3/background.js",
   "dist/bridge/index.js",
 ];
 

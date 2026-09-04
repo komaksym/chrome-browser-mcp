@@ -17,15 +17,17 @@ const executeScript = vi.fn();
 const updateTab = vi.fn();
 const updateWindow = vi.fn();
 
+const connectNative = vi.fn(() => ({
+  postMessage: (message: unknown) => nativeMessages.push(message),
+  onMessage: { addListener: (listener: (message: unknown) => void) => { nativeMessageListener = listener; } },
+  onDisconnect: { addListener: (listener: () => void) => { nativeDisconnectListener = listener; } },
+}));
+
 const chromeApi = {
   runtime: {
     id: "test-extension",
     getManifest: () => ({ version: "0.1.0" }),
-    connectNative: () => ({
-      postMessage: (message: unknown) => nativeMessages.push(message),
-      onMessage: { addListener: (listener: (message: unknown) => void) => { nativeMessageListener = listener; } },
-      onDisconnect: { addListener: (listener: () => void) => { nativeDisconnectListener = listener; } },
-    }),
+    connectNative,
     onInstalled: { addListener: vi.fn() },
     onStartup: { addListener: vi.fn() },
     onMessage: {
@@ -75,6 +77,7 @@ describe("extension background worker commands", () => {
   beforeAll(async () => {
     vi.stubGlobal("chrome", chromeApi);
     await import("../../src/extension/background.js");
+    expect(connectNative).toHaveBeenNthCalledWith(1, "com.komaksym.chrome_browser_mcp");
   });
 
   beforeEach(() => {
