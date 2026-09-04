@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   LIVE_SMOKE_FAILURE,
@@ -91,6 +93,20 @@ describe("live ChatGPT smoke environment policy", () => {
       CONTROL_PLANE_API_KEY: "test-runtime-key",
       TUNNEL_CLIENT_PROFILE_DIR: "/tmp/profiles",
     });
+  });
+
+  it("requires an explicit live tunnel id instead of inheriting a personal tunnel id", () => {
+    if (process.platform === "win32") return;
+    const result = spawnSync("bash", [resolve(import.meta.dirname, "../../scripts/configure-live-smoke-tunnel.sh")], {
+      env: {
+        ...process.env,
+        PATH: "/usr/bin:/bin",
+        CONTROL_PLANE_TUNNEL_ID: "tunnel_0123456789abcdef0123456789abcdef",
+      },
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/Usage:/);
   });
 
   it("validates the canary syntax", () => {
