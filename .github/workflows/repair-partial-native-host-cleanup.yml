@@ -1,0 +1,97 @@
+name: Repair partial native host cleanup
+
+on:
+  push:
+    branches:
+      - issue-36-live-smoke-env
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch partial provisioning rollback and remove helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_parent='9f2361c96d631f428ec611a41639c668a670bd06'
+          actual_parent="$(git rev-parse HEAD^)"
+          if [[ "$actual_parent" != "$expected_parent" ]]; then
+            echo "Unexpected helper parent: $actual_parent" >&2
+            exit 1
+          fi
+
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/e2e/support/chrome-mcp-stack.mjs')
+          text = path.read_text()
+          old = '''  for (const [index, directory] of directories.entries()) {
+            const path = paths[index];
+            try {
+              previous.set(path, await readFile(path, "utf8"));
+            } catch {
+              previous.set(path, undefined);
+            }
+            await mkdir(directory, { recursive: true });
+            await writeFile(path, manifest);
+          }
+
+          return {
+            paths,
+            async restore() {
+              for (const path of paths) {
+                const previousManifest = previous.get(path);
+                if (previousManifest === undefined) await unlink(path).catch(() => undefined);
+                else await writeFile(path, previousManifest);
+              }
+            },
+          };
+          '''
+          new = '''  const restorePaths = async (pathsToRestore) => {
+            for (const path of pathsToRestore) {
+              const previousManifest = previous.get(path);
+              if (previousManifest === undefined) await unlink(path).catch(() => undefined);
+              else await writeFile(path, previousManifest);
+            }
+          };
+          const touchedPaths = [];
+          try {
+            for (const [index, directory] of directories.entries()) {
+              const path = paths[index];
+              try {
+                previous.set(path, await readFile(path, "utf8"));
+              } catch (error) {
+                if (error?.code !== "ENOENT") throw error;
+                previous.set(path, undefined);
+              }
+              touchedPaths.push(path);
+              await mkdir(directory, { recursive: true });
+              await writeFile(path, manifest);
+            }
+          } catch (error) {
+            await restorePaths(touchedPaths);
+            throw error;
+          }
+
+          return {
+            paths,
+            restore: () => restorePaths(paths),
+          };
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'Expected exactly one native-host install block, found {text.count(old)}')
+          path.write_text(text.replace(old, new))
+          PY
+
+          git rm .github/workflows/repair-partial-native-host-cleanup.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tests/e2e/support/chrome-mcp-stack.mjs
+          git commit -m 'fix: roll back partial native host provisioning'
+          git push origin HEAD:issue-36-live-smoke-env
