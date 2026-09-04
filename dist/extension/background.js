@@ -721,7 +721,7 @@ ${tab.url}`.toLocaleLowerCase().includes(query)).slice(0, maxResults);
       const windowId = numberParam(params, "windowId", -1);
       const tab = await chrome.tabs.create({
         url: httpUrlParam(params, "url"),
-        active: params.active !== false,
+        active: params.active === true,
         ...windowId >= 0 ? { windowId } : {}
       });
       if (tab.incognito) throw new Error("INCOGNITO_DISABLED: Incognito tabs are excluded");

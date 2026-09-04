@@ -2,7 +2,7 @@
 
 A local bridge that lets a private ChatGPT developer-mode app inspect and control the tabs already open in your desktop Google Chrome.
 
-Current patch version: **0.1.17**. Every patch must bump this version; CI rejects patches that do not.
+Current patch version: **0.1.20**. Every patch must bump this version; CI rejects patches that do not.
 
 The bridge exposes 18 MCP tools:
 
@@ -10,9 +10,11 @@ The bridge exposes 18 MCP tools:
 - actions: `click`, `type`, `fill_form`, `press_key`, `scroll`, `select_option`, `navigate`, `new_tab`, `close_tab`
 - ChatGPT job runtime: `spawn_agents`, `collect_agents`, `cancel_agents`
 
-`spawn_agents` starts one or more background ChatGPT worker jobs and returns stable `request_id` / `run_id` / `job_id` / `task_id` / `agent_id` identities. Callers must reuse the same `request_id` with equivalent `tasks` and `max_concurrency` arguments when retrying; equivalent retries replay the original run, while conflicting reuse fails with `IDEMPOTENCY_CONFLICT`. `max_concurrency` limits active workers within one run, and the runtime applies a separate two-worker global active ceiling by default, queueing excess logical jobs. While a worker responds, bounded in-memory snapshots preserve streaming output across ChatGPT DOM virtualization and are never written to browser storage. Fresh snapshots must match the current post-submit revision/timestamp, exact worker identity, generation state, and unique completion marker before they can finish a job. A verified terminal snapshot stores the same bounded, untrusted result used by collection, releases the current worker lease, and immediately gives queued work a scheduler pass without any `collect_agents` call. Job `state` is a point-in-time observation, not by itself a terminal verdict: `FAILED_TRANSIENT` with `error.retryable: true` is exposed with `terminal: false` and `recoverable: true`. When callers need refreshed public state or results, `collect_agents` remains the authoritative result/barrier read; recoverable jobs appear in `pending`, `failed` is reserved for `FAILED_TERMINAL`, and `barrier.satisfied: true` is the gate for consuming/aggregating all required isolated child results. `cancel_agents` is explicit cancellation, not transient-error recovery; do not call it merely because a running spawn/collection snapshot contains a retryable extraction failure. Browser tab IDs stay private to the runtime.
+`spawn_agents` starts one or more background ChatGPT worker jobs and returns stable `request_id` / `run_id` / `job_id` / `task_id` / `agent_id` identities. Callers must reuse the same `request_id` with equivalent `tasks` and `max_concurrency` arguments when retrying; equivalent retries replay the original run, while conflicting reuse fails with `IDEMPOTENCY_CONFLICT`. `max_concurrency` limits active workers within one run, and the runtime applies a separate two-worker global active ceiling by default, queueing excess logical jobs. While a worker responds, bounded in-memory snapshots preserve streaming output across ChatGPT DOM virtualization and are never written to browser storage. Fresh snapshots must match the current post-submit revision/timestamp, exact worker identity, generation state, and unique completion marker before they can finish a job. A verified terminal snapshot stores the same bounded, untrusted result used by collection, releases the current worker lease, and immediately gives queued work a scheduler pass without any `collect_agents` call. If a lifecycle event is missed, a blocked scheduling pass or browser reconnect compares leased worker tabs with current tab and snapshot evidence and applies the same verified-completion or `WORKER_TAB_CLOSED` transition; malformed or failed observations do not reclaim capacity. This repair path is event/boundary driven and has no lease TTL, periodic polling, prompt submission, reload, or tab activation. Job `state` is a point-in-time observation, not by itself a terminal verdict: `FAILED_TRANSIENT` with `error.retryable: true` is exposed with `terminal: false` and `recoverable: true`. When callers need refreshed public state or results, `collect_agents` remains the authoritative result/barrier read; recoverable jobs appear in `pending`, `failed` is reserved for `FAILED_TERMINAL`, and `barrier.satisfied: true` is the gate for consuming/aggregating all required isolated child results. `cancel_agents` is explicit cancellation, not transient-error recovery; do not call it merely because a running spawn/collection snapshot contains a retryable extraction failure. Browser tab IDs stay private to the runtime.
 
 Action targets accept either a CSS selector or exact visible text / `aria-label` / placeholder / name / associated label text. Ambiguous targets fail instead of guessing.
+
+`new_tab` opens the requested URL in the background by default so it does not interrupt the user's current Chrome work. Set `active: true` only when foreground focus is explicitly required.
 
 The bridge does **not** expose cookies, local storage, session storage, saved passwords, hidden input values, arbitrary JavaScript execution, Chrome internal pages, or incognito tabs. It does not use the Chrome debugger API.
 
@@ -109,7 +111,7 @@ Then open `chrome://extensions` and click **Update**. Do not select the extensio
 
 `git pull` updates both `dist/extension` (what Chrome loads) and `dist/bridge` (what the native host executes). Clicking **Update** reloads the unpacked extension/native-messaging connection so the newly pulled runtime is used.
 
-The visible extension version must change on every patch. For this patch it must show **0.1.17**. If it still shows an older version, the pulled runtime was not applied.
+The visible extension version must change on every patch. For this patch it must show **0.1.20**. If it still shows an older version, the pulled runtime was not applied.
 
 ## 3. Verify the local browser chain
 

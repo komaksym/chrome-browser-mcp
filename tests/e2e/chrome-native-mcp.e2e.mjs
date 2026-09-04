@@ -133,6 +133,40 @@ try {
   const workWindow = await browserCdp.send("Browser.getWindowForTarget", { targetId: workTarget.targetId });
   assert.notEqual(workWindow.windowId, parentWindow.windowId, "Expected a distinct focused work window");
 
+  const activeBeforeNewTab = await client.callTool({ name: "get_active_tab", arguments: {} });
+  const backgroundTab = await client.callTool({
+    name: "new_tab",
+    arguments: { url: workUrl },
+  });
+  assert.equal(backgroundTab.isError, undefined, JSON.stringify(backgroundTab));
+  assert.equal(backgroundTab.structuredContent.tab.active, false);
+  const activeAfterBackgroundTab = await client.callTool({ name: "get_active_tab", arguments: {} });
+  assert.equal(
+    activeAfterBackgroundTab.structuredContent.tab.tabId,
+    activeBeforeNewTab.structuredContent.tab.tabId,
+    "A default new tab must not change the active tab",
+  );
+  assert.equal(
+    activeAfterBackgroundTab.structuredContent.tab.windowId,
+    activeBeforeNewTab.structuredContent.tab.windowId,
+    "A default new tab must not change the focused window",
+  );
+
+  const foregroundTab = await client.callTool({
+    name: "new_tab",
+    arguments: { url: workUrl, active: true },
+  });
+  assert.equal(foregroundTab.isError, undefined, JSON.stringify(foregroundTab));
+  assert.equal(foregroundTab.structuredContent.tab.active, true);
+  const activeAfterForegroundTab = await client.callTool({ name: "get_active_tab", arguments: {} });
+  assert.equal(
+    activeAfterForegroundTab.structuredContent.tab.tabId,
+    foregroundTab.structuredContent.tab.tabId,
+    "An explicit foreground request must activate the new tab",
+  );
+  await client.callTool({ name: "close_tab", arguments: { tabId: backgroundTab.structuredContent.tab.tabId } });
+  await client.callTool({ name: "close_tab", arguments: { tabId: foregroundTab.structuredContent.tab.tabId } });
+
   const spawnedAgent = await client.callTool({
     name: "spawn_agents",
     arguments: {

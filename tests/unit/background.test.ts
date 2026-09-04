@@ -215,6 +215,86 @@ describe("extension background worker commands", () => {
     });
   });
 
+  it("opens tabs in the background by default but honors an explicit foreground request", async () => {
+    const backgroundTab = {
+      id: 88,
+      url: "https://example.com/background",
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 9,
+      index: 0,
+    } as chrome.tabs.Tab;
+    const foregroundTab = { ...backgroundTab, id: 89, url: "https://example.com/foreground", active: true };
+    const createMock = chromeApi.tabs.create as unknown as {
+      mockResolvedValueOnce: (value: chrome.tabs.Tab) => unknown;
+    };
+    createMock.mockResolvedValueOnce(backgroundTab);
+    createMock.mockResolvedValueOnce(foregroundTab);
+
+    const backgroundResponse = await request("new_tab", { url: backgroundTab.url });
+    const foregroundResponse = await request("new_tab", { url: foregroundTab.url, active: true });
+
+    expect(backgroundResponse.error).toBeUndefined();
+    expect(foregroundResponse.error).toBeUndefined();
+    expect(chromeApi.tabs.create).toHaveBeenNthCalledWith(1, {
+      url: backgroundTab.url,
+      active: false,
+    });
+    expect(chromeApi.tabs.create).toHaveBeenNthCalledWith(2, {
+      url: foregroundTab.url,
+      active: true,
+    });
+  });
+
+  it("keeps the user's active tab and window unchanged when opening a background tab", async () => {
+    const activeTab = {
+      id: 41,
+      url: "https://example.com/current",
+      incognito: false,
+      active: true,
+      pinned: false,
+      discarded: false,
+      windowId: 7,
+      index: 0,
+    } as chrome.tabs.Tab;
+    const backgroundTab = {
+      ...activeTab,
+      id: 42,
+      url: "https://example.com/background",
+      active: false,
+      windowId: 8,
+      index: 1,
+    } as chrome.tabs.Tab;
+    tabs.set(activeTab.id!, activeTab);
+
+    let activeTabId = activeTab.id;
+    let focusedWindowId = activeTab.windowId;
+    const createMock = chromeApi.tabs.create as unknown as {
+      mockImplementation: (implementation: (properties: chrome.tabs.CreateProperties) => Promise<chrome.tabs.Tab>) => unknown;
+    };
+    createMock.mockImplementation((properties) => {
+      const created = { ...backgroundTab, active: properties.active !== false };
+      if (created.active) {
+        activeTab.active = false;
+        activeTabId = created.id;
+        focusedWindowId = created.windowId;
+      }
+      tabs.set(created.id!, created);
+      return Promise.resolve(created);
+    });
+
+    const response = await request("new_tab", { url: backgroundTab.url, windowId: backgroundTab.windowId });
+
+    expect(response.error).toBeUndefined();
+    expect(activeTabId).toBe(activeTab.id);
+    expect(focusedWindowId).toBe(activeTab.windowId);
+    expect(updateWindow).not.toHaveBeenCalled();
+    expect(tabs.get(activeTab.id!)).toMatchObject({ active: true, windowId: activeTab.windowId });
+    expect(tabs.get(backgroundTab.id!)).toMatchObject({ active: false, windowId: backgroundTab.windowId });
+  });
+
   it("opens an agent worker in the stored parent window with the parent as opener", async () => {
     const parent = {
       id: 47,
