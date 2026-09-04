@@ -12,8 +12,8 @@ Expected properties for this patch:
 
 - `connected: true`
 - extension ID `jlpddlfiallighiohmhhkemgbhofpnha`
-- extension version `0.1.19`
-- MCP version `0.1.19`
+- extension version `0.1.24`
+- MCP version `0.1.24`
 - 18 tools discovered
 
 If the extension and MCP versions differ, the local runtime is stale on one side. If the port is closed, open Chrome and check that the unpacked extension is enabled.
@@ -51,7 +51,7 @@ the script intentionally does not accept an arbitrary profile/URL pair:
 export CONTROL_PLANE_API_KEY_2="sk-..."
 ./scripts/configure-tunnel.sh tunnel_<second-id> chrome2
 
-npm run verify:local2
+npm run verify:local -- chrome2
 tunnel-client doctor --profile chrome-browser-mcp-2 --explain
 tunnel-client run --profile chrome-browser-mcp-2
 ```
@@ -62,7 +62,7 @@ For the agent profile:
 export CONTROL_PLANE_API_KEY_AGENT="sk-..."
 ./scripts/configure-tunnel.sh tunnel_<agent-id> chrome3
 
-npm run verify:local3
+npm run verify:local -- chrome3
 tunnel-client doctor --profile chrome-browser-mcp-3 --explain
 tunnel-client run --profile chrome-browser-mcp-3
 ```
@@ -137,8 +137,8 @@ Pass criteria:
 - Chrome is closed, the extension is disabled, or the native-host manifest is missing.
 - Run `npm run install:mac` again.
 - Confirm the extension ID exactly matches the expected ID.
-- For the subscription or agent profile, run `npm run verify:local2` or
-  `npm run verify:local3` against its fixed port.
+- For the subscription or agent profile, run `npm run verify:local -- chrome2` or
+  `npm run verify:local -- chrome3` against its fixed port.
 
 ### Extension updated but tools are still stale
 
