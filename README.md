@@ -97,6 +97,28 @@ jlpddlfiallighiohmhhkemgbhofpnha
 
 Do not proceed if the ID differs. The native host only accepts that exact extension origin.
 
+## Multi-profile topology
+
+The installer provisions three isolated Chrome routes:
+
+| Profile | Extension directory | Extension ID | Bridge | Tunnel profile |
+| --- | --- | --- | --- | --- |
+| Current | dist/extension | jlpddlfiallighiohmhhkemgbhofpnha | 127.0.0.1:2091 | chrome-browser-mcp |
+| New subscription | dist/extension2 | doommfidfcljgehkppgiinjdjnafcmdc | 127.0.0.1:2093 | chrome-browser-mcp-2 |
+| Agent | dist/extension3 | cjfkelmiakmoanljhleaahajdichbemn | 127.0.0.1:2095 | chrome-browser-mcp-3 |
+
+Load exactly one matching extension directory in each Chrome profile. The
+Chrome profile itself does not need a Google account; the ChatGPT tab must be
+signed in to the intended ChatGPT account. The installer copies this mapping
+to:
+
+~~~text
+~/Library/Application Support/Chrome Browser MCP/instances.json
+~~~
+
+mcps-launcher consumes that copied mapping, so ports and extension IDs have one
+source of truth.
+
 ## 2. Updating future patches
 
 **You select the extension directory only once.** The built extension and MCP bridge under `dist/` are committed to Git, and CI rejects source changes whose committed runtime build is stale.
@@ -149,6 +171,18 @@ http://127.0.0.1:2091/mcp
 ```
 
 Keep `tunnel-client run` active whenever ChatGPT needs the browser tools.
+
+For the second and agent profiles, create unique tunnel IDs and use the
+matching instance argument:
+
+~~~bash
+./scripts/configure-tunnel.sh tunnel_<second-id> chrome2
+./scripts/configure-tunnel.sh tunnel_<agent-id> chrome3
+~~~
+
+All three tunnel clients may use the same control-plane API key. The
+CONTROL_PLANE_API_KEY_2 and CONTROL_PLANE_API_KEY_AGENT names are separate
+environment references only; they may contain the same value.
 
 ## 5. Add it to ChatGPT
 

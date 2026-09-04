@@ -7,24 +7,27 @@ import { chromium } from "@playwright/test";
 
 export const EXTENSION_ID = "jlpddlfiallighiohmhhkemgbhofpnha";
 const NATIVE_HOST_NAME = "com.komaksym.chrome_browser_mcp";
+const RESERVED_MCP_PORTS = new Set([2091, 2093, 2095]);
 
 function unique(values) {
   return [...new Set(values.filter((value) => typeof value === "string" && value.length > 0))];
 }
 
 async function claimLoopbackPort(requestedPort = 0) {
-  const server = createServer();
-  try {
-    await new Promise((resolvePromise, reject) => {
-      server.once("error", reject);
-      server.listen(requestedPort, "127.0.0.1", resolvePromise);
-    });
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("Could not resolve loopback port");
-    return address.port;
-  } finally {
-    if (server.listening) {
-      await new Promise((resolvePromise) => server.close(resolvePromise));
+  while (true) {
+    const server = createServer();
+    try {
+      await new Promise((resolvePromise, reject) => {
+        server.once("error", reject);
+        server.listen(requestedPort, "127.0.0.1", resolvePromise);
+      });
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Could not resolve loopback port");
+      if (requestedPort !== 0 || !RESERVED_MCP_PORTS.has(address.port)) return address.port;
+    } finally {
+      if (server.listening) {
+        await new Promise((resolvePromise) => server.close(resolvePromise));
+      }
     }
   }
 }

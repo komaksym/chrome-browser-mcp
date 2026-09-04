@@ -17,7 +17,12 @@ interface ChatGptWorkerSnapshotMessage {
   snapshot: ChatGptWorkerSnapshot;
 }
 
-const HOST_NAME = "com.komaksym.chrome_browser_mcp";
+declare const MCP_NATIVE_HOST_NAME: string | undefined;
+
+/** Build-time native host for this extension flavor; unit tests fall back to the primary host. */
+const HOST_NAME =
+  (typeof MCP_NATIVE_HOST_NAME !== "undefined" && MCP_NATIVE_HOST_NAME) ||
+  "com.komaksym.chrome_browser_mcp";
 const RESTRICTED_SCHEMES = ["chrome:", "chrome-extension:", "devtools:", "view-source:", "about:"];
 let nativePort: chrome.runtime.Port | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;

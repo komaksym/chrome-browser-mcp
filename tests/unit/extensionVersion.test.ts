@@ -14,6 +14,14 @@ describe("extension version", () => {
     const manifest = JSON.parse(readFileSync(new URL("../../dist/extension/manifest.json", import.meta.url), "utf8")) as {
       version: string;
     };
+    const secondManifest = JSON.parse(
+      readFileSync(new URL("../../dist/extension2/manifest.json", import.meta.url), "utf8"),
+    ) as { version: string };
+    const thirdManifest = JSON.parse(
+      readFileSync(new URL("../../dist/extension3/manifest.json", import.meta.url), "utf8"),
+    ) as { version: string };
     expect(manifest.version).toBe(packageJson.version);
+    expect(secondManifest.version).toBe(packageJson.version);
+    expect(thirdManifest.version).toBe(packageJson.version);
   });
 });

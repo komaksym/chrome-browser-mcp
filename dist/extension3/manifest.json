@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Chrome Browser MCP Agent",
+  "version": "0.1.19",
+  "description": "Local Chrome read/write access for a private ChatGPT MCP app.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7bD0ixnCZS36BdSspFaIbozQhRAE0TEWnUYSmqNfmzHf7AeU/e8rg/QFZfM5M7hD62uLXF+uiyZvb+wxYEU9E6bjypq4iMKw8vlFtrOfgmK+/X+Nd8OhEHR1HW7r+5X6HU4aO6m6XnD/eflU9zGHA3MPdQRJwYNqAdtvwKEDmr5VSNFmNQMRwrOxYQuulxAdWkTRF2M5RObPymSq/FH6JewSZJVGMsCe0WPwGye/anrZ6I1aFd0QIExmbd2rI+GyR7g9VY+EntpaKEQQoDVvsMbMt0kJ/qnlYaMNOmqJAZTVbt34whD+PPbk5XExDTWZKRt4CTKZhYyg9E7PYVocmwIDAQAB",
+  "minimum_chrome_version": "121",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Chrome Browser MCP Agent"
+  }
+}

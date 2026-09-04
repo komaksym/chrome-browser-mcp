@@ -12,8 +12,8 @@ Expected properties for this patch:
 
 - `connected: true`
 - extension ID `jlpddlfiallighiohmhhkemgbhofpnha`
-- extension version `0.1.3`
-- MCP version `0.1.3`
+- extension version `0.1.19`
+- MCP version `0.1.19`
 - 18 tools discovered
 
 If the extension and MCP versions differ, the local runtime is stale on one side. If the port is closed, open Chrome and check that the unpacked extension is enabled.
@@ -39,6 +39,40 @@ tunnel-client run --profile chrome-browser-mcp
 ```
 
 Do not report the tunnel as working unless `doctor` succeeds and the running client's readiness page says ready.
+
+## B2. Additional Chrome profiles and ChatGPT accounts
+
+Each logical ChatGPT session needs its own Chrome bridge tunnel. Tunnels are
+org-scoped, so create a tunnel and runtime key in each account or workspace.
+The local instance name selects the matching Chrome port and tunnel profile;
+the script intentionally does not accept an arbitrary profile/URL pair:
+
+```bash
+export CONTROL_PLANE_API_KEY_2="sk-..."
+./scripts/configure-tunnel.sh tunnel_<second-id> chrome2
+
+npm run verify:local2
+tunnel-client doctor --profile chrome-browser-mcp-2 --explain
+tunnel-client run --profile chrome-browser-mcp-2
+```
+
+For the agent profile:
+
+```bash
+export CONTROL_PLANE_API_KEY_AGENT="sk-..."
+./scripts/configure-tunnel.sh tunnel_<agent-id> chrome3
+
+npm run verify:local3
+tunnel-client doctor --profile chrome-browser-mcp-3 --explain
+tunnel-client run --profile chrome-browser-mcp-3
+```
+
+In Chrome, load only `dist/extension2` in the second profile and only
+`dist/extension3` in the agent profile. Confirm the discovered app reports IDs
+`doommfidfcljgehkppgiinjdjnafcmdc` and `cjfkelmiakmoanljhleaahajdichbemn`.
+Repeat section C in each ChatGPT account. If you use `mcps-launcher`, `mcps all`
+starts all three Chrome tunnels, the shared Skills server, its Skills tunnels,
+and Playwright together.
 
 ## C. Create the developer-mode app
 
@@ -103,6 +137,8 @@ Pass criteria:
 - Chrome is closed, the extension is disabled, or the native-host manifest is missing.
 - Run `npm run install:mac` again.
 - Confirm the extension ID exactly matches the expected ID.
+- For the subscription or agent profile, run `npm run verify:local2` or
+  `npm run verify:local3` against its fixed port.
 
 ### Extension updated but tools are still stale
 
@@ -116,7 +152,12 @@ Confirm this file exists:
 ~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.komaksym.chrome_browser_mcp.json
 ```
 
-The `path` inside it must point to an executable `scripts/native-host-wrapper.sh` in the current checkout. Moving the repository requires rerunning `npm run install:mac`.
+The `path` inside it must point to an executable wrapper under
+`~/Library/Application Support/Chrome Browser MCP/`. Moving the repository
+requires rerunning `npm run install:mac`. That command also refreshes
+`~/Library/Application Support/Chrome Browser MCP/instances.json`, which
+`mcps-launcher` uses as the single installed mapping for the three Chrome
+routes.
 
 ### Agent worker does not submit
 
@@ -129,7 +170,7 @@ The `path` inside it must point to an executable `scripts/native-host-wrapper.sh
 - Confirm the tunnel is associated with the target ChatGPT workspace/account.
 - Confirm the app creator has Tunnels Read + Use.
 - Keep `tunnel-client run --profile chrome-browser-mcp` running.
-- Run `tunnel-client doctor --profile chrome-browser-mcp --explain`.
+- Run `tunnel-client doctor --profile <matching-profile> --explain`.
 
 ### Tool metadata changed
 
