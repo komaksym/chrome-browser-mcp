@@ -195,8 +195,13 @@ export class AgentRuntime {
     }
     /** Serializes validated worker lifecycle observations through the runtime state machine. */
     handleBrowserLifecycleEvent(event) {
-        if (event.type === "ready")
+        if (event.type === "ready") {
+            void this.enqueueSchedulerOperation(async () => {
+                await this.reconcileWorkerLeases();
+                await this.pumpScheduler(false);
+            });
             return;
+        }
         const owner = this.jobForWorkerTab(event.tabId);
         if (!owner)
             return;
@@ -205,31 +210,8 @@ export class AgentRuntime {
             if (job.tabId !== event.tabId)
                 return;
             if (event.type === "agent_worker_tab_removed") {
-                job.tabId = undefined;
-                if (typeof this.browser.forgetChatGptWorkerSnapshot === "function") {
-                    this.browser.forgetChatGptWorkerSnapshot(event.tabId);
-                }
-                if (job.state === "VERIFIED_DONE" ||
-                    job.state === "FAILED_TERMINAL" ||
-                    job.state === "CANCELLED") {
-                    return;
-                }
-                // cancelAgents marks cancellationRequested synchronously. When removal races
-                // cancellation, let the already-serialized cancellation path own the terminal
-                // state and exact lease release.
-                if (run.cancellationRequested)
-                    return;
-                const attempt = this.currentDispatchAttempt(run, job);
-                job.retryRequested = false;
-                job.error = {
-                    code: "WORKER_TAB_CLOSED",
-                    message: "Agent Runtime worker tab was closed before completion",
-                    retryable: false,
-                };
-                job.state = "FAILED_TERMINAL";
-                if (attempt)
-                    this.releaseDispatchAttempt(attempt);
-                await this.schedule();
+                if (this.terminalizeWorkerTabClosed(run, job, event.tabId))
+                    await this.schedule();
                 return;
             }
             const attempt = this.currentDispatchAttempt(run, job);
@@ -370,13 +352,137 @@ export class AgentRuntime {
         });
     }
     /** Runs the scheduler while holding its serialized operation slot. */
-    async pumpScheduler() {
+    async pumpScheduler(allowReconciliation = true) {
+        return this.pumpSchedulerWithReconciliation(allowReconciliation);
+    }
+    /** Runs the scheduler with at most one evidence-based repair attempt per pass. */
+    async pumpSchedulerWithReconciliation(allowReconciliation) {
+        let reconciliationAttempted = false;
         while (true) {
             const attempts = this.reserveAvailableJobs();
-            if (attempts.length === 0)
+            if (attempts.length === 0) {
+                if (allowReconciliation &&
+                    !reconciliationAttempted &&
+                    this.activeWorkerCount() >= this.maxActiveWorkers &&
+                    this.hasDispatchEligibleJob()) {
+                    reconciliationAttempted = true;
+                    if (await this.reconcileWorkerLeases())
+                        continue;
+                }
                 return;
+            }
             await Promise.all(attempts.map((attempt) => this.dispatch(attempt)));
         }
+    }
+    /** Returns whether blocked global capacity has at least one job ready to dispatch. */
+    hasDispatchEligibleJob() {
+        return [...this.runs.values()].some((run) => run.jobs.some((job) => this.isDispatchEligible(job)));
+    }
+    /** Reconciles leased worker tabs against one current browser tab observation. */
+    async reconcileWorkerLeases() {
+        const leasedJobs = [...this.runs.values()].flatMap((run) => run.jobs.flatMap((job) => {
+            const attempt = this.currentDispatchAttempt(run, job);
+            return attempt && job.tabId !== undefined ? [attempt] : [];
+        }));
+        if (leasedJobs.length === 0)
+            return false;
+        const tabIds = await this.currentBrowserTabIds();
+        if (!tabIds)
+            return false;
+        let releasedCapacity = false;
+        for (const attempt of leasedJobs) {
+            if (!this.isDispatchAttemptActive(attempt))
+                continue;
+            const tabId = attempt.job.tabId;
+            if (tabId === undefined)
+                continue;
+            if (!tabIds.has(tabId)) {
+                releasedCapacity = this.terminalizeWorkerTabClosed(attempt.run, attempt.job, tabId) || releasedCapacity;
+                continue;
+            }
+            const snapshot = await this.readCurrentSnapshot(attempt);
+            if (!snapshot)
+                continue;
+            const outcome = this.acceptWorkerSnapshot(attempt, snapshot);
+            if (outcome === "accepted")
+                releasedCapacity = true;
+        }
+        return releasedCapacity;
+    }
+    /** Reads current tab metadata without treating a malformed or failed observation as proof of absence. */
+    async currentBrowserTabIds() {
+        try {
+            const response = await this.browser.request("list_tabs");
+            if (!response || typeof response !== "object")
+                return undefined;
+            const tabs = response.tabs;
+            if (!Array.isArray(tabs))
+                return undefined;
+            const tabIds = new Set();
+            for (const tab of tabs) {
+                if (!tab || typeof tab !== "object")
+                    return undefined;
+                const tabId = tab.tabId;
+                if (typeof tabId !== "number" || !Number.isSafeInteger(tabId) || tabId <= 0)
+                    return undefined;
+                tabIds.add(tabId);
+            }
+            return tabIds;
+        }
+        catch {
+            return undefined;
+        }
+    }
+    /** Queries current worker state for reconciliation, bypassing an observation that may now be stale. */
+    async readCurrentSnapshot(attempt) {
+        const { job } = attempt;
+        const tabId = job.tabId;
+        if (tabId === undefined || !this.isDispatchAttemptActive(attempt))
+            return undefined;
+        const cached = typeof this.browser.latestChatGptWorkerSnapshot === "function"
+            ? this.browser.latestChatGptWorkerSnapshot(tabId)
+            : undefined;
+        try {
+            const response = await this.browser.request("read_chatgpt_worker_snapshot", {
+                tabId,
+                afterRevision: Math.max(job.snapshotBaselineRevision ?? 0, job.snapshotLastRevision ?? 0, cached?.revision ?? 0),
+            });
+            if (!this.isDispatchAttemptActive(attempt))
+                return undefined;
+            const snapshot = response?.snapshot;
+            if (this.acceptFreshSnapshot(job, snapshot))
+                return snapshot;
+        }
+        catch {
+            // Snapshot retrieval is an optimization; reconciliation must not reclaim on uncertain evidence.
+        }
+        return undefined;
+    }
+    /** Applies the shared terminal transition for a missing current worker tab. */
+    terminalizeWorkerTabClosed(run, job, tabId) {
+        if (job.tabId !== tabId)
+            return false;
+        job.tabId = undefined;
+        if (typeof this.browser.forgetChatGptWorkerSnapshot === "function") {
+            this.browser.forgetChatGptWorkerSnapshot(tabId);
+        }
+        if (job.state === "VERIFIED_DONE" ||
+            job.state === "FAILED_TERMINAL" ||
+            job.state === "CANCELLED" ||
+            run.cancellationRequested) {
+            return false;
+        }
+        const attempt = this.currentDispatchAttempt(run, job);
+        if (!attempt)
+            return false;
+        job.retryRequested = false;
+        job.error = {
+            code: "WORKER_TAB_CLOSED",
+            message: "Agent Runtime worker tab was closed before completion",
+            retryable: false,
+        };
+        job.state = "FAILED_TERMINAL";
+        return this.releaseDispatchAttempt(attempt);
     }
     /** Reserves all currently available global and per-run worker slots before starting browser operations. */
     reserveAvailableJobs() {

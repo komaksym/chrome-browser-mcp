@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AgentRuntime } from "../../src/bridge/agentRuntime.js";
 import { BrowserError, type BrowserClient } from "../../src/bridge/browserClient.js";
-import type { BrowserLifecycleEvent } from "../../src/bridge/types.js";
+import type { BrowserLifecycleEvent, ChatGptWorkerSnapshot } from "../../src/bridge/types.js";
 
 function completionMarker(prompt: string): string {
   const marker = prompt.match(/<<<SUBAGENT_DONE:[0-9a-f-]+>>>/i)?.[0];
@@ -22,6 +22,7 @@ function lifecycleHarness() {
   const submitted = new Map<number, string>();
   const forgotten: number[] = [];
   const closed: number[] = [];
+  const liveTabs = new Set<number>();
   let openCalls = 0;
   const browser = {
     subscribeLifecycle: (listener: (event: BrowserLifecycleEvent) => void) => {
@@ -36,6 +37,7 @@ function lifecycleHarness() {
       }
       if (method === "open_agent_worker_tab") {
         openCalls += 1;
+        liveTabs.add(openCalls);
         return Promise.resolve({ tab: { tabId: openCalls } });
       }
       if (method === "chatgpt_worker_submit") {
@@ -55,8 +57,13 @@ function lifecycleHarness() {
         });
       }
       if (method === "read_chatgpt_worker_snapshot") return Promise.resolve({});
+      if (method === "list_tabs") {
+        return Promise.resolve({ tabs: [...liveTabs].map((tabId) => ({ tabId })) });
+      }
       if (method === "close_tab") {
-        closed.push(args.tabId as number);
+        const tabId = args.tabId as number;
+        closed.push(tabId);
+        liveTabs.delete(tabId);
         return Promise.resolve({ closed: true });
       }
       return Promise.resolve({});
@@ -73,6 +80,7 @@ function lifecycleHarness() {
     forgotten,
     closed,
     emit: (event: BrowserLifecycleEvent) => lifecycleListener?.(event),
+    removeLiveTab: (tabId: number) => liveTabs.delete(tabId),
     openCalls: () => openCalls,
   };
 }
@@ -278,6 +286,165 @@ describe("AgentRuntime worker lease behavior", () => {
     const completedSecond = await runtime.collectAgents(second.run_id);
     expect(completedSecond.state).toBe("COMPLETE");
     expect(openCalls).toBe(2);
+  });
+
+  it("reconciles a missing worker tab when blocked scheduling needs capacity", async () => {
+    const harness = lifecycleHarness();
+    const runtime = new AgentRuntime(harness.browser, { maxActiveWorkers: 1 });
+    const first = await runtime.spawnAgents(
+      [
+        { agent_id: "active", prompt: "active" },
+        { agent_id: "queued", prompt: "queued" },
+      ],
+      1,
+      "reconcile-missing-tab",
+    );
+    expect(harness.openCalls()).toBe(1);
+
+    expect(harness.removeLiveTab(1)).toBe(true);
+    const second = await runtime.spawnAgents([{ agent_id: "new-run", prompt: "new run" }], 1, "reconcile-trigger");
+
+    expect(harness.openCalls()).toBe(2);
+    expect(second.jobs[0]?.state).toBe("CREATED");
+
+    const view = await runtime.collectAgents(first.run_id);
+    expect(view.failed).toMatchObject([
+      {
+        agent_id: "active",
+        state: "FAILED_TERMINAL",
+        error: { code: "WORKER_TAB_CLOSED", retryable: false },
+      },
+    ]);
+    expect(view.pending).toMatchObject([
+      { agent_id: "queued", state: "GENERATING" },
+    ]);
+  });
+
+  it("reconciles a missing worker tab when the browser reconnects", async () => {
+    const harness = lifecycleHarness();
+    const runtime = new AgentRuntime(harness.browser, { maxActiveWorkers: 1 });
+    const first = await runtime.spawnAgents(
+      [
+        { agent_id: "active", prompt: "active" },
+        { agent_id: "queued", prompt: "queued" },
+      ],
+      1,
+      "reconnect-missing-tab",
+    );
+    expect(harness.openCalls()).toBe(1);
+
+    expect(harness.removeLiveTab(1)).toBe(true);
+    harness.emit({ type: "ready", extensionVersion: "0.1.17", extensionId: "test-extension" });
+    await flushUntil(() => harness.openCalls() === 2, "reconnect did not repair stale worker capacity");
+
+    const view = await runtime.collectAgents(first.run_id);
+    expect(view.failed).toMatchObject([
+      {
+        agent_id: "active",
+        state: "FAILED_TERMINAL",
+        error: { code: "WORKER_TAB_CLOSED", retryable: false },
+      },
+    ]);
+  });
+
+  it("reconciles a fresh terminal snapshot through the standard validation path", async () => {
+    let nextTabId = 1;
+    let terminalSnapshotAvailable = false;
+    const cached = { snapshot: undefined as ChatGptWorkerSnapshot | undefined };
+    let directReads = 0;
+    let snapshotReads = 0;
+    const submitted = new Map<number, { prompt: string; timestamp: number }>();
+    const liveTabs = new Set<number>();
+    const browser = {
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") {
+          return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        }
+        if (method === "open_agent_worker_tab") {
+          const tabId = nextTabId++;
+          liveTabs.add(tabId);
+          return Promise.resolve({ tab: { tabId } });
+        }
+        if (method === "chatgpt_worker_submit") {
+          const tabId = args.tabId as number;
+          const timestamp = Date.now();
+          submitted.set(tabId, { prompt: args.prompt as string, timestamp });
+          return Promise.resolve({ submitted: true, snapshot: { revision: 1, timestamp } });
+        }
+        if (method === "list_tabs") {
+          return Promise.resolve({ tabs: [...liveTabs].map((tabId) => ({ tabId })) });
+        }
+        if (method === "read_chatgpt_worker_snapshot") {
+          snapshotReads += 1;
+          const tabId = args.tabId as number;
+          const current = submitted.get(tabId);
+          if (!terminalSnapshotAvailable || tabId !== 1 || !current) return Promise.resolve({});
+          return Promise.resolve({
+            snapshot: {
+              ready: true,
+              generating: false,
+              latestUserText: current.prompt,
+              latestUserTruncated: false,
+              latestAssistantText: `Reconciled answer\n${completionMarker(current.prompt)}`,
+              latestAssistantTruncated: false,
+              revision: 2,
+              timestamp: current.timestamp + 1,
+            },
+          });
+        }
+        if (method === "read_chatgpt_worker") {
+          directReads += 1;
+          const current = submitted.get(args.tabId as number);
+          if (!current) throw new Error("missing submitted worker");
+          return Promise.resolve({
+            ready: true,
+            generating: true,
+            latestUserText: current.prompt,
+            latestUserTruncated: false,
+            latestAssistantText: null,
+            latestAssistantTruncated: false,
+          });
+        }
+        return Promise.resolve({});
+      },
+      latestChatGptWorkerSnapshot: () => cached.snapshot,
+      forgetChatGptWorkerSnapshot: () => undefined,
+    } as unknown as BrowserClient;
+    const runtime = new AgentRuntime(browser, { maxActiveWorkers: 1 });
+
+    const first = await runtime.spawnAgents(
+      [
+        { agent_id: "active", prompt: "active" },
+        { agent_id: "queued", prompt: "queued" },
+      ],
+      1,
+      "reconcile-terminal-snapshot",
+    );
+    expect(first.jobs[0]?.state).toBe("DISPATCHED");
+    expect(first.jobs[1]?.state).toBe("CREATED");
+
+    const firstSubmission = submitted.get(1);
+    if (!firstSubmission) throw new Error("expected first worker submission");
+    cached.snapshot = {
+      ready: true,
+      generating: true,
+      latestUserText: firstSubmission.prompt,
+      latestUserTruncated: false,
+      latestAssistantText: "still generating",
+      latestAssistantTruncated: false,
+      revision: 2,
+      timestamp: firstSubmission.timestamp + 1,
+    };
+    terminalSnapshotAvailable = true;
+    await runtime.spawnAgents([{ agent_id: "new-run", prompt: "new run" }], 1, "reconcile-snapshot-trigger");
+
+    expect(snapshotReads).toBeGreaterThan(1);
+    expect(directReads).toBe(0);
+    const view = await runtime.collectAgents(first.run_id);
+    expect(view.results).toMatchObject([
+      { agent_id: "active", result: { type: "text", text: "Reconciled answer" } },
+    ]);
+    expect(view.pending).toMatchObject([{ agent_id: "queued", state: "GENERATING" }]);
   });
 
   it("terminalizes a removed current worker and dispatches queued work without collection", async () => {
