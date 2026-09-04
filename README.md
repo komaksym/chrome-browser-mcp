@@ -130,6 +130,20 @@ A successful check prints:
 
 The verifier fails if the extension and MCP versions differ, or if the bridge is old enough not to report its MCP version. This makes stale bridge/extension combinations immediately distinguishable.
 
+## 3b. Run the opt-in live strict code-review smoke
+
+The real headed-Chrome workflow is intentionally separate from the deterministic suite:
+
+```bash
+npm run test:e2e:live:code-review
+```
+
+It opens a fresh ChatGPT parent conversation in a dedicated persistent profile, submits
+`@skills-mcp /code-review`, and verifies that the parent creates exactly two independent
+worker conversations through the configured Chrome MCP app. The default canary is
+`komaksym/chrome-browser-mcp#34`; see [`docs/LIVE_CHATGPT_CODE_REVIEW.md`](docs/LIVE_CHATGPT_CODE_REVIEW.md)
+for one-time profile/app setup and configuration.
+
 ## 4. Configure Secure MCP Tunnel
 
 Create a tunnel and runtime API key in OpenAI Platform. Then:
