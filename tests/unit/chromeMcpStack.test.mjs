@@ -1,13 +1,18 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdtemp } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { startChromeMcpStack } from "../e2e/support/chrome-mcp-stack.mjs";
+import { profileProcessPattern, startChromeMcpStack } from "../e2e/support/chrome-mcp-stack.mjs";
 
 const NATIVE_HOST_NAME = "com.komaksym.chrome_browser_mcp";
 
 describe("startChromeMcpStack", () => {
+  it("escapes configurable profile paths before using them as pkill regexes", () => {
+    expect(profileProcessPattern("/tmp/live.*[x](test)$")).toBe(
+      String.raw`--user-data-dir=/tmp/live\.\*\[x\]\(test\)\$`,
+    );
+  });
+
   it("restores native-host registration when startup fails after provisioning", async () => {
     const sandbox = await mkdtemp(join(tmpdir(), "chrome-mcp-stack-cleanup-"));
     const homeDir = join(sandbox, "home");
