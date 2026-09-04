@@ -41,14 +41,13 @@ interface WorkerTabState {
   status: string;
 }
 
-type RecoveryStep = "current_state" | "bounded_reread" | "activate_worker_tab" | "reload_worker_tab";
+type RecoveryStep = "current_state" | "bounded_reread" | "reload_worker_tab";
 
 interface ObservationDiagnostics {
   observation_source?:
     | "initial_read"
     | "streaming_snapshot"
     | "backoff_reread"
-    | "activated_reread"
     | "reload_reread";
   observation_state?: { ready: boolean; generating: boolean; hasAssistantText: boolean };
   tab?: Pick<WorkerTabState, "active" | "discarded" | "status" | "windowId">;
@@ -1077,16 +1076,6 @@ export class AgentRuntime {
     }
   }
 
-  /** Restores the previously active normal tab after activation-based worker recovery when possible. */
-  private async restoreActiveTab(tabId: number | undefined): Promise<void> {
-    if (tabId === undefined) return;
-    try {
-      await this.browser.request("activate_worker_tab", { tabId, allowNonWorker: true });
-    } catch {
-      // Restoration is best-effort; recovery outcome must not be replaced by a focus error.
-    }
-  }
-
   /** Runs the bounded observation-only recovery ladder for a finished turn whose marker was not observed. */
   private async recoverFinishedObservation(
     attempt: DispatchAttempt,
@@ -1110,27 +1099,7 @@ export class AgentRuntime {
     );
     if (!this.isDispatchAttemptActive(attempt) || Boolean(job.result)) return;
 
-    let previousActiveTabId: number | undefined;
-    try {
-      const active = await this.browser.request<{ tab: { tabId: number } }>("get_active_tab");
-      previousActiveTabId = active.tab.tabId;
-    } catch {
-      // Active-tab restoration metadata is optional.
-    }
-
-    job.diagnostics.recovery_steps.push("activate_worker_tab");
-    let activated: WorkerReadResult | undefined;
-    try {
-      activated = await this.recoveryAttempt(attempt, "activate_worker_tab", async () => {
-        await this.browser.request("activate_worker_tab", { tabId });
-        return this.rereadWithBackoff(attempt, "activated_reread", 2);
-      });
-    } finally {
-      await this.restoreActiveTab(previousActiveTabId);
-    }
-    if (!this.isDispatchAttemptActive(attempt) || Boolean(job.result)) return;
-
-    const latest = activated ?? reread ?? initial;
+    const latest = reread ?? initial;
     if (this.generationDefinitelyFinished(latest)) {
       job.diagnostics.recovery_steps.push("reload_worker_tab");
       await this.recoveryAttempt(attempt, "reload_worker_tab", async () => {
