@@ -24,6 +24,7 @@ function lifecycleHarness() {
   const closed: number[] = [];
   const liveTabs = new Set<number>();
   let openCalls = 0;
+  let listTabsCalls = 0;
   const browser = {
     subscribeLifecycle: (listener: (event: BrowserLifecycleEvent) => void) => {
       lifecycleListener = listener;
@@ -58,6 +59,7 @@ function lifecycleHarness() {
       }
       if (method === "read_chatgpt_worker_snapshot") return Promise.resolve({});
       if (method === "list_tabs") {
+        listTabsCalls += 1;
         return Promise.resolve({ tabs: [...liveTabs].map((tabId) => ({ tabId })) });
       }
       if (method === "close_tab") {
@@ -81,6 +83,7 @@ function lifecycleHarness() {
     closed,
     emit: (event: BrowserLifecycleEvent) => lifecycleListener?.(event),
     removeLiveTab: (tabId: number) => liveTabs.delete(tabId),
+    listTabsCalls: () => listTabsCalls,
     openCalls: () => openCalls,
   };
 }
@@ -438,13 +441,33 @@ describe("AgentRuntime worker lease behavior", () => {
     terminalSnapshotAvailable = true;
     await runtime.spawnAgents([{ agent_id: "new-run", prompt: "new run" }], 1, "reconcile-snapshot-trigger");
 
-    expect(snapshotReads).toBeGreaterThan(1);
+    expect(snapshotReads).toBe(1);
     expect(directReads).toBe(0);
     const view = await runtime.collectAgents(first.run_id);
     expect(view.results).toMatchObject([
       { agent_id: "active", result: { type: "text", text: "Reconciled answer" } },
     ]);
     expect(view.pending).toMatchObject([{ agent_id: "queued", state: "GENERATING" }]);
+  });
+
+  it("does not reconcile when queued work is already blocked by its per-run limit", async () => {
+    const harness = lifecycleHarness();
+    const runtime = new AgentRuntime(harness.browser, { maxActiveWorkers: 2 });
+    await runtime.spawnAgents(
+      [
+        { agent_id: "active", prompt: "active" },
+        { agent_id: "queued", prompt: "queued" },
+      ],
+      1,
+      "per-run-limit-active",
+    );
+    expect(harness.openCalls()).toBe(1);
+    expect(harness.listTabsCalls()).toBe(0);
+
+    await runtime.spawnAgents([{ agent_id: "other-active", prompt: "other active" }], 1, "per-run-limit-other");
+
+    expect(harness.openCalls()).toBe(2);
+    expect(harness.listTabsCalls()).toBe(0);
   });
 
   it("accepts a fresh cached terminal snapshot through reconciliation", async () => {
@@ -505,7 +528,7 @@ describe("AgentRuntime worker lease behavior", () => {
 
     await runtime.spawnAgents([{ agent_id: "new-run", prompt: "new run" }], 1, "reconcile-cached-trigger");
 
-    expect(snapshotReads).toBe(1);
+    expect(snapshotReads).toBe(0);
     const view = await runtime.collectAgents(first.run_id);
     expect(view.results).toMatchObject([
       { agent_id: "active", result: { type: "text", text: "Cached answer" } },

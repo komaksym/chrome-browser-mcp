@@ -190,8 +190,6 @@ export declare class AgentRuntime {
     private cancelAndSchedule;
     /** Runs the scheduler while holding its serialized operation slot. */
     private pumpScheduler;
-    /** Runs the scheduler with at most one evidence-based repair attempt per pass. */
-    private pumpSchedulerWithReconciliation;
     /** Returns whether blocked global capacity has at least one job ready to dispatch. */
     private hasDispatchEligibleJob;
     /** Reconciles leased worker tabs against one current browser tab observation. */
@@ -236,6 +234,8 @@ export declare class AgentRuntime {
     private isWorkerSnapshot;
     /** Returns the latest fresh snapshot from the event cache or the extension query seam. */
     private readFreshSnapshot;
+    /** Requests and validates one newer worker snapshot after a caller-selected revision. */
+    private requestFreshSnapshot;
     /** Records a snapshot revision only when it is newer than the post-submit observation baseline. */
     private acceptFreshSnapshot;
     /** Applies the same identity, generation, and completion-marker rules to one fresh snapshot. */

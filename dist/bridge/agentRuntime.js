@@ -353,10 +353,6 @@ export class AgentRuntime {
     }
     /** Runs the scheduler while holding its serialized operation slot. */
     async pumpScheduler(allowReconciliation = true) {
-        return this.pumpSchedulerWithReconciliation(allowReconciliation);
-    }
-    /** Runs the scheduler with at most one evidence-based repair attempt per pass. */
-    async pumpSchedulerWithReconciliation(allowReconciliation) {
         let reconciliationAttempted = false;
         while (true) {
             const attempts = this.reserveAvailableJobs();
@@ -376,7 +372,12 @@ export class AgentRuntime {
     }
     /** Returns whether blocked global capacity has at least one job ready to dispatch. */
     hasDispatchEligibleJob() {
-        return [...this.runs.values()].some((run) => run.jobs.some((job) => this.isDispatchEligible(job)));
+        return [...this.runs.values()].some((run) => {
+            if (run.cancellationRequested)
+                return false;
+            const runActiveCount = run.jobs.filter((job) => this.occupiesSlot(job)).length;
+            return runActiveCount < run.maxConcurrency && run.jobs.some((job) => this.isDispatchEligible(job));
+        });
     }
     /** Reconciles leased worker tabs against one current browser tab observation. */
     async reconcileWorkerLeases() {
@@ -446,24 +447,7 @@ export class AgentRuntime {
     /** Queries current worker state for reconciliation, bypassing an observation that may now be stale. */
     async readCurrentSnapshot(attempt, cached) {
         const { job } = attempt;
-        const tabId = job.tabId;
-        if (tabId === undefined || !this.isDispatchAttemptActive(attempt))
-            return undefined;
-        try {
-            const response = await this.browser.request("read_chatgpt_worker_snapshot", {
-                tabId,
-                afterRevision: Math.max(job.snapshotBaselineRevision ?? 0, job.snapshotLastRevision ?? 0, cached?.revision ?? 0),
-            });
-            if (!this.isDispatchAttemptActive(attempt))
-                return undefined;
-            const snapshot = response?.snapshot;
-            if (this.acceptFreshSnapshot(job, snapshot))
-                return snapshot;
-        }
-        catch {
-            // Snapshot retrieval is an optimization; reconciliation must not reclaim on uncertain evidence.
-        }
-        return undefined;
+        return this.requestFreshSnapshot(attempt, Math.max(job.snapshotBaselineRevision ?? 0, job.snapshotLastRevision ?? 0, cached?.revision ?? 0));
     }
     /** Applies the shared terminal transition for a missing current worker tab. */
     terminalizeWorkerTabClosed(run, job, tabId) {
@@ -732,10 +716,18 @@ export class AgentRuntime {
             : undefined;
         if (this.acceptFreshSnapshot(job, cached))
             return cached;
+        return this.requestFreshSnapshot(attempt, Math.max(job.snapshotBaselineRevision ?? 0, job.snapshotLastRevision ?? 0));
+    }
+    /** Requests and validates one newer worker snapshot after a caller-selected revision. */
+    async requestFreshSnapshot(attempt, afterRevision) {
+        const { job } = attempt;
+        const tabId = job.tabId;
+        if (tabId === undefined || !this.isDispatchAttemptActive(attempt))
+            return undefined;
         try {
             const response = await this.browser.request("read_chatgpt_worker_snapshot", {
                 tabId,
-                afterRevision: Math.max(job.snapshotBaselineRevision ?? 0, job.snapshotLastRevision ?? 0),
+                afterRevision,
             });
             if (!this.isDispatchAttemptActive(attempt))
                 return undefined;
