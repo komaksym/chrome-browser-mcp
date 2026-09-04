@@ -80,27 +80,36 @@ async function installNativeHostManifests({ root, homeDir, nativeHostDirs = [] }
     2,
   )}\n`;
 
+  const restorePaths = async (pathsToRestore) => {
+  for (const path of pathsToRestore) {
+    const previousManifest = previous.get(path);
+    if (previousManifest === undefined) await unlink(path).catch(() => undefined);
+    else await writeFile(path, previousManifest);
+  }
+};
+const touchedPaths = [];
+try {
   for (const [index, directory] of directories.entries()) {
     const path = paths[index];
     try {
       previous.set(path, await readFile(path, "utf8"));
-    } catch {
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
       previous.set(path, undefined);
     }
+    touchedPaths.push(path);
     await mkdir(directory, { recursive: true });
     await writeFile(path, manifest);
   }
+} catch (error) {
+  await restorePaths(touchedPaths);
+  throw error;
+}
 
-  return {
-    paths,
-    async restore() {
-      for (const path of paths) {
-        const previousManifest = previous.get(path);
-        if (previousManifest === undefined) await unlink(path).catch(() => undefined);
-        else await writeFile(path, previousManifest);
-      }
-    },
-  };
+return {
+  paths,
+  restore: () => restorePaths(paths),
+};
 }
 
 async function findExistingNativeHostManifest({ homeDir, nativeHostDirs = [] }) {
