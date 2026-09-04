@@ -1,0 +1,75 @@
+name: Repair issue 36 lockfile
+
+on:
+  push:
+    branches:
+      - issue-36-live-smoke-env
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Repair lockfile and remove helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_parent='221e4f091f103c01b9fe5ab12ed22f4462bc0ffe'
+          actual_parent="$(git rev-parse HEAD^)"
+          if [[ "$actual_parent" != "$expected_parent" ]]; then
+            echo "Unexpected helper parent: $actual_parent" >&2
+            exit 1
+          fi
+
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          path = Path('package-lock.json')
+          text = path.read_text()
+          replacements = [
+              (
+                  '"integrity": "sha512-MZyXUkZHjQxUvzK7rN8DJ3SRmrVrke8ZyRusHlP+kuwqTcfWLyqMOE3sScPPyeIXN/mDJIfGXvcMqCgYKekoQ=="',
+                  '"integrity": "sha512-MZyXUkZHjQxUvzK7rN8DJ3SRmrVrke8ZyRusHlP+kuwqTcfWLyqMOE3sScPPyeIXN/mDJIfGXvcMqCgYKekoQw=="',
+              ),
+              ('"type-check": "~0.4.0"', '"type-check": "^0.4.0"'),
+          ]
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected exactly one occurrence of {old!r}, found {count}')
+              text = text.replace(old, new)
+          path.write_text(text)
+
+          diff = subprocess.check_output(
+              ['git', 'diff', '--unified=0', '12baa84e2db66e375345a75bb1f8137b7f78aef3', '--', 'package-lock.json'],
+              text=True,
+          )
+          changed = [
+              line for line in diff.splitlines()
+              if (line.startswith('+') or line.startswith('-'))
+              and not line.startswith('+++')
+              and not line.startswith('---')
+          ]
+          expected = [
+              '-  "version": "0.1.16",',
+              '+  "version": "0.1.17",',
+              '-      "version": "0.1.16",',
+              '+      "version": "0.1.17",',
+          ]
+          if changed != expected:
+              raise SystemExit('Unexpected package-lock diff after repair:\n' + diff)
+          print(diff)
+          PY
+
+          git rm .github/workflows/repair-issue-36-lockfile.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package-lock.json
+          git commit -m 'fix: restore lockfile dependency metadata'
+          git push origin HEAD:issue-36-live-smoke-env
