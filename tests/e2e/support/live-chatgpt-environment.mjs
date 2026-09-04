@@ -56,7 +56,13 @@ export function assertDedicatedProfilePath({ profileDir, root, userHome = homedi
 }
 
 function parsePort(value) {
-  const port = Number.parseInt(value, 10);
+  if (!/^[0-9]+$/.test(value)) {
+    throw new LiveSmokeSetupError(
+      LIVE_SMOKE_FAILURE.ENDPOINT_COLLISION,
+      `LIVE_CHATGPT_MCP_PORT must be an integer between 1024 and 65535; got ${value}`,
+    );
+  }
+  const port = Number(value);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) {
     throw new LiveSmokeSetupError(
       LIVE_SMOKE_FAILURE.ENDPOINT_COLLISION,
@@ -182,10 +188,28 @@ async function fetchCanaryRef(canary, githubToken) {
   };
 }
 
-function runTunnelDoctor(profile, root) {
-  const result = spawnSync("tunnel-client", ["doctor", "--profile", profile, "--explain"], {
+const TUNNEL_ENV_OVERRIDES = [
+  "CONTROL_PLANE_TUNNEL_ID",
+  "MCP_COMMAND",
+  "MCP_SERVER_URL",
+  "TUNNEL_CLIENT_CONFIG",
+  "TUNNEL_CLIENT_PROFILE",
+  "TUNNEL_CLIENT_PROFILE_FILE",
+];
+
+export function tunnelClientInvocation({ command, profile, mcpUrl, env = process.env, explain = false }) {
+  const childEnv = { ...env };
+  for (const name of TUNNEL_ENV_OVERRIDES) delete childEnv[name];
+  const args = [command, "--profile", profile, "--mcp.server-url", mcpUrl];
+  if (explain) args.push("--explain");
+  return { args, env: childEnv };
+}
+
+function runTunnelDoctor(profile, mcpUrl, root) {
+  const invocation = tunnelClientInvocation({ command: "doctor", profile, mcpUrl, explain: true });
+  const result = spawnSync("tunnel-client", invocation.args, {
     cwd: root,
-    env: process.env,
+    env: invocation.env,
     encoding: "utf8",
     stdio: "ignore",
   });
@@ -203,10 +227,11 @@ function runTunnelDoctor(profile, root) {
   }
 }
 
-async function startTunnel(profile, root) {
-  const tunnel = spawn("tunnel-client", ["run", "--profile", profile], {
+async function startTunnel(profile, mcpUrl, root) {
+  const invocation = tunnelClientInvocation({ command: "run", profile, mcpUrl });
+  const tunnel = spawn("tunnel-client", invocation.args, {
     cwd: root,
-    env: process.env,
+    env: invocation.env,
     stdio: ["ignore", "ignore", "ignore"],
   });
   await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
@@ -430,8 +455,8 @@ export async function startLiveChatGptEnvironment({ root, env = process.env, ver
       );
     }
 
-    runTunnelDoctor(config.tunnelProfile, resolvedRoot);
-    tunnel = await startTunnel(config.tunnelProfile, resolvedRoot);
+    runTunnelDoctor(config.tunnelProfile, stack.mcpUrl, resolvedRoot);
+    tunnel = await startTunnel(config.tunnelProfile, stack.mcpUrl, resolvedRoot);
 
     const cdp = await stack.browser.newBrowserCDPSession();
     const chromeVersion = await cdp.send("Browser.getVersion");
