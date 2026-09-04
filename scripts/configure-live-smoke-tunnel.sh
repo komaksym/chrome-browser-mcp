@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TUNNEL_ID="${1:-${CONTROL_PLANE_TUNNEL_ID:-}}"
+TUNNEL_ID="${1:-}"
 PROFILE="${LIVE_CHATGPT_TUNNEL_PROFILE:-chrome-browser-mcp-live-smoke}"
 PORT="${LIVE_CHATGPT_MCP_PORT:-2191}"
 
