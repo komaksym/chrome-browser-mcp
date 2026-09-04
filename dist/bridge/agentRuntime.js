@@ -400,7 +400,17 @@ export class AgentRuntime {
                 releasedCapacity = this.terminalizeWorkerTabClosed(attempt.run, attempt.job, tabId) || releasedCapacity;
                 continue;
             }
-            const snapshot = await this.readCurrentSnapshot(attempt);
+            const cached = typeof this.browser.latestChatGptWorkerSnapshot === "function"
+                ? this.browser.latestChatGptWorkerSnapshot(tabId)
+                : undefined;
+            if (this.acceptFreshSnapshot(attempt.job, cached)) {
+                const outcome = this.acceptWorkerSnapshot(attempt, cached);
+                if (outcome === "accepted") {
+                    releasedCapacity = true;
+                    continue;
+                }
+            }
+            const snapshot = await this.readCurrentSnapshot(attempt, cached);
             if (!snapshot)
                 continue;
             const outcome = this.acceptWorkerSnapshot(attempt, snapshot);
@@ -434,14 +444,11 @@ export class AgentRuntime {
         }
     }
     /** Queries current worker state for reconciliation, bypassing an observation that may now be stale. */
-    async readCurrentSnapshot(attempt) {
+    async readCurrentSnapshot(attempt, cached) {
         const { job } = attempt;
         const tabId = job.tabId;
         if (tabId === undefined || !this.isDispatchAttemptActive(attempt))
             return undefined;
-        const cached = typeof this.browser.latestChatGptWorkerSnapshot === "function"
-            ? this.browser.latestChatGptWorkerSnapshot(tabId)
-            : undefined;
         try {
             const response = await this.browser.request("read_chatgpt_worker_snapshot", {
                 tabId,

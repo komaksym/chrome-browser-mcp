@@ -387,8 +387,8 @@ describe("AgentRuntime worker lease behavior", () => {
               latestUserTruncated: false,
               latestAssistantText: `Reconciled answer\n${completionMarker(current.prompt)}`,
               latestAssistantTruncated: false,
-              revision: 2,
-              timestamp: current.timestamp + 1,
+              revision: 3,
+              timestamp: current.timestamp + 2,
             },
           });
         }
@@ -443,6 +443,72 @@ describe("AgentRuntime worker lease behavior", () => {
     const view = await runtime.collectAgents(first.run_id);
     expect(view.results).toMatchObject([
       { agent_id: "active", result: { type: "text", text: "Reconciled answer" } },
+    ]);
+    expect(view.pending).toMatchObject([{ agent_id: "queued", state: "GENERATING" }]);
+  });
+
+  it("accepts a fresh cached terminal snapshot through reconciliation", async () => {
+    let nextTabId = 1;
+    let snapshotReads = 0;
+    const cached = { snapshot: undefined as ChatGptWorkerSnapshot | undefined };
+    const submitted = new Map<number, { prompt: string; timestamp: number }>();
+    const liveTabs = new Set<number>();
+    const browser = {
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") {
+          return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        }
+        if (method === "open_agent_worker_tab") {
+          const tabId = nextTabId++;
+          liveTabs.add(tabId);
+          return Promise.resolve({ tab: { tabId } });
+        }
+        if (method === "chatgpt_worker_submit") {
+          const tabId = args.tabId as number;
+          const timestamp = Date.now();
+          submitted.set(tabId, { prompt: args.prompt as string, timestamp });
+          return Promise.resolve({ submitted: true, snapshot: { revision: 1, timestamp } });
+        }
+        if (method === "list_tabs") {
+          return Promise.resolve({ tabs: [...liveTabs].map((tabId) => ({ tabId })) });
+        }
+        if (method === "read_chatgpt_worker_snapshot") {
+          snapshotReads += 1;
+          return Promise.resolve({});
+        }
+        return Promise.resolve({});
+      },
+      latestChatGptWorkerSnapshot: () => cached.snapshot,
+      forgetChatGptWorkerSnapshot: () => undefined,
+    } as unknown as BrowserClient;
+    const runtime = new AgentRuntime(browser, { maxActiveWorkers: 1 });
+    const first = await runtime.spawnAgents(
+      [
+        { agent_id: "active", prompt: "active" },
+        { agent_id: "queued", prompt: "queued" },
+      ],
+      1,
+      "reconcile-cached-terminal",
+    );
+    const submission = submitted.get(1);
+    if (!submission) throw new Error("expected first worker submission");
+    cached.snapshot = {
+      ready: true,
+      generating: false,
+      latestUserText: submission.prompt,
+      latestUserTruncated: false,
+      latestAssistantText: `Cached answer\n${completionMarker(submission.prompt)}`,
+      latestAssistantTruncated: false,
+      revision: 2,
+      timestamp: submission.timestamp + 1,
+    };
+
+    await runtime.spawnAgents([{ agent_id: "new-run", prompt: "new run" }], 1, "reconcile-cached-trigger");
+
+    expect(snapshotReads).toBe(1);
+    const view = await runtime.collectAgents(first.run_id);
+    expect(view.results).toMatchObject([
+      { agent_id: "active", result: { type: "text", text: "Cached answer" } },
     ]);
     expect(view.pending).toMatchObject([{ agent_id: "queued", state: "GENERATING" }]);
   });
