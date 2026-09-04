@@ -2,15 +2,19 @@ import { readFile } from "node:fs/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-const endpoint = process.env.CHROME_MCP_URL ?? "http://127.0.0.1:2091/mcp";
-const healthUrl = new URL("/healthz", endpoint);
+const instanceName = process.argv[2] ?? "chrome";
 
 try {
   const { instances } = JSON.parse(
     await readFile(new URL("./instances.json", import.meta.url), "utf8"),
   );
+  const instance = instances.find(({ name }) => name === instanceName);
+  if (!instance) throw new Error(`Unknown Chrome instance: ${instanceName}`);
+
+  const endpoint = process.env.CHROME_MCP_URL ?? `http://127.0.0.1:${instance.port}/mcp`;
+  const healthUrl = new URL("/healthz", endpoint);
   const port = new URL(endpoint).port;
-  const expectedExtensionId = instances.find((instance) => String(instance.port) === port)?.extensionId;
+  const expectedExtensionId = instances.find((candidate) => String(candidate.port) === port)?.extensionId;
 
   const response = await fetch(healthUrl, { signal: AbortSignal.timeout(5_000) });
   if (!response.ok) throw new Error(`health check returned HTTP ${response.status}`);
