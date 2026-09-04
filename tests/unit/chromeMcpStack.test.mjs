@@ -13,6 +13,63 @@ describe("startChromeMcpStack", () => {
     );
   });
 
+  it("reuses only a standard native host installed from the current checkout", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "chrome-mcp-stack-existing-host-"));
+    const root = join(sandbox, "current-checkout");
+    const homeDir = join(sandbox, "home");
+    const standardNativeHostDir =
+      process.platform === "darwin"
+        ? join(homeDir, "Library/Application Support/Google/Chrome/NativeMessagingHosts")
+        : join(homeDir, ".config/google-chrome/NativeMessagingHosts");
+    const configuredNativeHostDir = join(sandbox, "configured-native-hosts");
+    const oldNativeHostDir = process.env.CHROME_NATIVE_HOST_DIR;
+    const oldNativeHostDirs = process.env.CHROME_NATIVE_HOST_DIRS;
+
+    const writeInstalledHost = async (directory, bridgeEntry) => {
+      await mkdir(directory, { recursive: true });
+      const wrapperPath = join(directory, "native-host-wrapper.sh");
+      await writeFile(
+        wrapperPath,
+        `#!/bin/bash\n# chrome-browser-mcp-bridge-base64: ${Buffer.from(bridgeEntry).toString("base64")}\n`,
+      );
+      await writeFile(
+        join(directory, `${NATIVE_HOST_NAME}.json`),
+        `${JSON.stringify({
+          name: NATIVE_HOST_NAME,
+          path: wrapperPath,
+          type: "stdio",
+          allowed_origins: ["chrome-extension://jlpddlfiallighiohmhhkemgbhofpnha/"],
+        })}\n`,
+      );
+    };
+
+    try {
+      await writeInstalledHost(
+        standardNativeHostDir,
+        join(sandbox, "other-checkout", "dist/bridge/index.js"),
+      );
+      await writeInstalledHost(configuredNativeHostDir, join(root, "dist/bridge/index.js"));
+      process.env.CHROME_NATIVE_HOST_DIR = configuredNativeHostDir;
+      delete process.env.CHROME_NATIVE_HOST_DIRS;
+
+      await expect(
+        startChromeMcpStack({
+          root,
+          homeDir,
+          profileDir: join(sandbox, "profile"),
+          chromePath: join(sandbox, "missing-chrome"),
+          provisionNativeHost: false,
+        }),
+      ).rejects.toThrow(/current checkout/);
+    } finally {
+      if (oldNativeHostDir === undefined) delete process.env.CHROME_NATIVE_HOST_DIR;
+      else process.env.CHROME_NATIVE_HOST_DIR = oldNativeHostDir;
+      if (oldNativeHostDirs === undefined) delete process.env.CHROME_NATIVE_HOST_DIRS;
+      else process.env.CHROME_NATIVE_HOST_DIRS = oldNativeHostDirs;
+      await rm(sandbox, { recursive: true, force: true });
+    }
+  });
+
   it("restores native-host registration when startup fails after provisioning", async () => {
     const sandbox = await mkdtemp(join(tmpdir(), "chrome-mcp-stack-cleanup-"));
     const homeDir = join(sandbox, "home");
