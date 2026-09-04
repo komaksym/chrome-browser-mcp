@@ -52,6 +52,7 @@ export type BrowserLifecycleEvent = {
 } | {
     type: "agent_worker_tab_removed";
     tabId: number;
+    snapshot?: ChatGptWorkerSnapshot;
 };
 export type IncomingNativeMessage = NativeResponse | NativeReady | NativeChatGptWorkerSnapshotEvent | NativeAgentWorkerTabRemovedEvent;
 export interface TabSummary {

@@ -6,6 +6,11 @@ export declare class BrowserError extends Error {
     readonly detail: string;
     constructor(code: string, detail: string);
 }
+/** Captures one consistent browser tab listing and the worker snapshots observed for those tabs. */
+export interface WorkerTabObservation {
+    tabIds: Set<number>;
+    snapshots: Map<number, ChatGptWorkerSnapshot>;
+}
 /** Sends typed requests to the connected Chrome extension over Native Messaging. */
 export declare class BrowserClient {
     private readonly output;
@@ -30,6 +35,8 @@ export declare class BrowserClient {
     latestChatGptWorkerSnapshot(tabId: number): ChatGptWorkerSnapshot | undefined;
     /** Removes the ephemeral ChatGPT worker snapshot retained for one tab. */
     forgetChatGptWorkerSnapshot(tabId: number): void;
+    /** Observes leased worker tabs and validates their current snapshots at the browser boundary. */
+    observeWorkerTabs(afterRevisionByTab: ReadonlyMap<number, number>): Promise<WorkerTabObservation | undefined>;
     /** Sends one browser request and resolves it with the matching Native Messaging response. */
     request<T>(method: BrowserMethod, params?: Record<string, unknown>): Promise<T>;
     /** Routes a single decoded Native Messaging frame to connection state or its pending request. */
@@ -38,6 +45,8 @@ export declare class BrowserClient {
     private validLifecycleEvent;
     /** Caches one newer bounded snapshot and returns lifecycle evidence without regressing current-turn completion. */
     private cacheChatGptWorkerSnapshot;
+    /** Retains one newer validated snapshot without emitting a lifecycle event. */
+    private rememberChatGptWorkerSnapshot;
     /** Delivers one lifecycle event without allowing observers to mutate cached evidence or disrupt parsing. */
     private emitLifecycle;
     /** Rejects all pending requests after the Native Messaging transport becomes unusable. */

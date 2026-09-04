@@ -20,6 +20,7 @@ async function flushUntil(predicate: () => boolean, message: string): Promise<vo
 function lifecycleHarness() {
   let lifecycleListener: ((event: BrowserLifecycleEvent) => void) | undefined;
   const submitted = new Map<number, string>();
+  const snapshots = new Map<number, ChatGptWorkerSnapshot>();
   const forgotten: number[] = [];
   const closed: number[] = [];
   const liveTabs = new Set<number>();
@@ -68,10 +69,18 @@ function lifecycleHarness() {
       }
       return Promise.resolve({});
     },
-    latestChatGptWorkerSnapshot: () => undefined,
+    latestChatGptWorkerSnapshot: (tabId: number) => {
+      const snapshot = snapshots.get(tabId);
+      return snapshot ? { ...snapshot } : undefined;
+    },
     forgetChatGptWorkerSnapshot: (tabId: number) => {
+      snapshots.delete(tabId);
       forgotten.push(tabId);
     },
+    observeWorkerTabs: () => ({
+      tabIds: new Set(liveTabs),
+      snapshots: new Map<number, ChatGptWorkerSnapshot>(),
+    }),
   } as unknown as BrowserClient;
 
   return {
@@ -80,6 +89,7 @@ function lifecycleHarness() {
     forgotten,
     closed,
     emit: (event: BrowserLifecycleEvent) => lifecycleListener?.(event),
+    cacheSnapshot: (tabId: number, snapshot: ChatGptWorkerSnapshot) => snapshots.set(tabId, snapshot),
     removeLiveTab: (tabId: number) => liveTabs.delete(tabId),
     openCalls: () => openCalls,
   };
@@ -320,6 +330,40 @@ describe("AgentRuntime worker lease behavior", () => {
     ]);
   });
 
+  it("preserves cached verified completion when reconciliation sees a missing worker tab", async () => {
+    const harness = lifecycleHarness();
+    const runtime = new AgentRuntime(harness.browser, { maxActiveWorkers: 1 });
+    const first = await runtime.spawnAgents(
+      [
+        { agent_id: "active", prompt: "active" },
+        { agent_id: "queued", prompt: "queued" },
+      ],
+      1,
+      "reconcile-cached-completion",
+    );
+    const prompt = harness.submitted.get(1);
+    if (!prompt) throw new Error("expected first submitted prompt");
+    harness.cacheSnapshot(1, {
+      ready: true,
+      generating: false,
+      latestUserText: prompt,
+      latestUserTruncated: false,
+      latestAssistantText: `verified answer\n${completionMarker(prompt)}`,
+      latestAssistantTruncated: false,
+      revision: 2,
+      timestamp: Date.now() + 1_000,
+    });
+    expect(harness.removeLiveTab(1)).toBe(true);
+
+    await runtime.spawnAgents([{ agent_id: "new-run", prompt: "new run" }], 1, "reconcile-cached-trigger");
+
+    const view = await runtime.collectAgents(first.run_id);
+    expect(view.results).toMatchObject([
+      { agent_id: "active", result: { text: "verified answer" } },
+    ]);
+    expect(view.failed).toEqual([]);
+  });
+
   it("reconciles a missing worker tab when the browser reconnects", async () => {
     const harness = lifecycleHarness();
     const runtime = new AgentRuntime(harness.browser, { maxActiveWorkers: 1 });
@@ -409,6 +453,16 @@ describe("AgentRuntime worker lease behavior", () => {
       },
       latestChatGptWorkerSnapshot: () => cached.snapshot,
       forgetChatGptWorkerSnapshot: () => undefined,
+      observeWorkerTabs: async () => {
+        const tabIds = new Set(liveTabs);
+        const snapshots = new Map<number, ChatGptWorkerSnapshot>();
+        for (const tabId of tabIds) {
+          const response = await browser.request("read_chatgpt_worker_snapshot", { tabId, afterRevision: 0 });
+          const snapshot = (response as { snapshot?: ChatGptWorkerSnapshot }).snapshot;
+          if (snapshot) snapshots.set(tabId, snapshot);
+        }
+        return { tabIds, snapshots };
+      },
     } as unknown as BrowserClient;
     const runtime = new AgentRuntime(browser, { maxActiveWorkers: 1 });
 
@@ -547,6 +601,401 @@ describe("AgentRuntime worker lease behavior", () => {
     harness.emit({ type: "agent_worker_tab_removed", tabId: 1 });
     for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
     expect(harness.openCalls()).toBe(2);
+  });
+
+  it("preserves lifecycle completion queued while reconciliation observes a missing tab", async () => {
+    let lifecycleListener: ((event: BrowserLifecycleEvent) => void) | undefined;
+    const deferListTabs = true;
+    let listTabsDeferred = false;
+    let resolveListTabs: ((value: unknown) => void) | undefined;
+    let openCalls = 0;
+    const liveTabs = new Set<number>();
+    const submitted = new Map<number, string>();
+    const cached = { snapshot: undefined as ChatGptWorkerSnapshot | undefined };
+    const browser = {
+      subscribeLifecycle: (listener: (event: BrowserLifecycleEvent) => void) => {
+        lifecycleListener = listener;
+        return () => {
+          if (lifecycleListener === listener) lifecycleListener = undefined;
+        };
+      },
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        if (method === "open_agent_worker_tab") {
+          openCalls += 1;
+          liveTabs.add(openCalls);
+          return Promise.resolve({ tab: { tabId: openCalls } });
+        }
+        if (method === "chatgpt_worker_submit") {
+          submitted.set(args.tabId as number, args.prompt as string);
+          return Promise.resolve({ submitted: true });
+        }
+        if (method === "list_tabs") {
+          if (deferListTabs && !listTabsDeferred) {
+            listTabsDeferred = true;
+            return new Promise((resolve) => {
+              resolveListTabs = resolve;
+            });
+          }
+          return Promise.resolve({ tabs: [...liveTabs].map((tabId) => ({ tabId })) });
+        }
+        if (method === "read_chatgpt_worker") {
+          const prompt = submitted.get(args.tabId as number);
+          if (!prompt) throw new Error("missing submitted prompt");
+          return Promise.resolve({
+            ready: true,
+            generating: true,
+            latestUserText: prompt,
+            latestUserTruncated: false,
+            latestAssistantText: "still generating",
+            latestAssistantTruncated: false,
+          });
+        }
+        return Promise.resolve({});
+      },
+      latestChatGptWorkerSnapshot: () => cached.snapshot,
+      forgetChatGptWorkerSnapshot: () => undefined,
+      observeWorkerTabs: async () => {
+        const response = await browser.request("list_tabs");
+        const tabs = (response as { tabs: Array<{ tabId: number }> }).tabs;
+        return {
+          tabIds: new Set(tabs.map((tab) => tab.tabId)),
+          snapshots: new Map<number, ChatGptWorkerSnapshot>(),
+        };
+      },
+    } as unknown as BrowserClient;
+    const runtime = new AgentRuntime(browser, { maxActiveWorkers: 1 });
+
+    const spawned = await runtime.spawnAgents(
+      [
+        { agent_id: "active", prompt: "active" },
+        { agent_id: "queued", prompt: "queued" },
+      ],
+      1,
+      "reconcile-queued-completion",
+    );
+    const prompt = submitted.get(1);
+    if (!prompt) throw new Error("expected first submitted prompt");
+    const collecting = runtime.collectAgents(spawned.run_id);
+    await flushUntil(() => listTabsDeferred, "reconciliation did not start its tab observation");
+
+    const snapshot = {
+      ready: true,
+      generating: false,
+      latestUserText: prompt,
+      latestUserTruncated: false,
+      latestAssistantText: `verified answer\n${completionMarker(prompt)}`,
+      latestAssistantTruncated: false,
+      revision: 2,
+      timestamp: Date.now() + 1_000,
+    } satisfies ChatGptWorkerSnapshot;
+    cached.snapshot = snapshot;
+    lifecycleListener?.({ type: "chatgpt_worker_snapshot", tabId: 1, snapshot });
+    liveTabs.delete(1);
+
+    await flushUntil(() => openCalls === 2, "queued work was not dispatched while reconciliation was pending");
+    resolveListTabs?.({ tabs: [] });
+
+    await collecting;
+    const view = await runtime.collectAgents(spawned.run_id);
+
+    expect(view.results).toMatchObject([
+      { agent_id: "active", result: { text: "verified answer" } },
+    ]);
+    expect(view.failed).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ agent_id: "active" }),
+    ]));
+  });
+
+  it("preserves removal completion evidence queued after reconciliation observes a missing tab", async () => {
+    let lifecycleListener: ((event: BrowserLifecycleEvent) => void) | undefined;
+    let observationStarted = false;
+    let resolveObservation: ((value: unknown) => void) | undefined;
+    let resolveRepairInspection: (() => void) | undefined;
+    const repairInspection = new Promise<void>((resolve) => {
+      resolveRepairInspection = resolve;
+    });
+    let openCalls = 0;
+    const liveTabs = new Set<number>();
+    const submitted = new Map<number, string>();
+    const cached = { snapshot: undefined as ChatGptWorkerSnapshot | undefined };
+    const browser = {
+      subscribeLifecycle: (listener: (event: BrowserLifecycleEvent) => void) => {
+        lifecycleListener = listener;
+        return () => {
+          if (lifecycleListener === listener) lifecycleListener = undefined;
+        };
+      },
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        if (method === "open_agent_worker_tab") {
+          openCalls += 1;
+          liveTabs.add(openCalls);
+          return Promise.resolve({ tab: { tabId: openCalls } });
+        }
+        if (method === "chatgpt_worker_submit") {
+          submitted.set(args.tabId as number, args.prompt as string);
+          return Promise.resolve({ submitted: true });
+        }
+        if (method === "read_chatgpt_worker") {
+          const prompt = submitted.get(args.tabId as number);
+          if (!prompt) throw new Error("missing submitted prompt");
+          return Promise.resolve({
+            ready: true,
+            generating: true,
+            latestUserText: prompt,
+            latestUserTruncated: false,
+            latestAssistantText: "still generating",
+            latestAssistantTruncated: false,
+          });
+        }
+        return Promise.resolve({});
+      },
+      latestChatGptWorkerSnapshot: () => cached.snapshot,
+      forgetChatGptWorkerSnapshot: () => undefined,
+      observeWorkerTabs: () => {
+        observationStarted = true;
+        return new Promise((resolve) => {
+          resolveObservation = resolve;
+        });
+      },
+    } as unknown as BrowserClient;
+    const runtime = new AgentRuntime(browser, { maxActiveWorkers: 1 });
+
+    const spawned = await runtime.spawnAgents(
+      [
+        { agent_id: "active", prompt: "active" },
+        { agent_id: "queued", prompt: "queued" },
+      ],
+      1,
+      "reconcile-removal-completion",
+    );
+    const prompt = submitted.get(1);
+    if (!prompt) throw new Error("expected first submitted prompt");
+    const collecting = runtime.collectAgents(spawned.run_id);
+    await flushUntil(() => observationStarted, "reconciliation did not start its tab observation");
+
+    const snapshot = {
+      ready: true,
+      generating: false,
+      latestUserText: prompt,
+      latestUserTruncated: false,
+      latestAssistantText: `verified answer\n${completionMarker(prompt)}`,
+      latestAssistantTruncated: false,
+      revision: 2,
+      timestamp: Date.now() + 1_000,
+    } satisfies ChatGptWorkerSnapshot;
+    const observation = {
+      get tabIds() {
+        resolveRepairInspection?.();
+        return new Set<number>();
+      },
+      snapshots: new Map<number, ChatGptWorkerSnapshot>(),
+    };
+    resolveObservation?.(observation);
+    await repairInspection;
+
+    cached.snapshot = snapshot;
+    lifecycleListener?.({ type: "chatgpt_worker_snapshot", tabId: 1, snapshot });
+    liveTabs.delete(1);
+    cached.snapshot = undefined;
+    lifecycleListener?.({ type: "agent_worker_tab_removed", tabId: 1, snapshot });
+
+    await flushUntil(() => openCalls === 2, "queued work was not dispatched after removal completion was preserved");
+    await collecting;
+    const view = await runtime.collectAgents(spawned.run_id);
+
+    expect(view.results).toMatchObject([
+      { agent_id: "active", result: { text: "verified answer" } },
+    ]);
+    expect(view.failed).toEqual([]);
+  });
+
+  it("reports a missing worker as WORKER_TAB_CLOSED when collection races reconciliation", async () => {
+    const deferListTabs = true;
+    let listTabsDeferred = false;
+    let resolveListTabs: ((value: unknown) => void) | undefined;
+    let openCalls = 0;
+    const liveTabs = new Set<number>();
+    const submitted = new Map<number, string>();
+    const browser = {
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        if (method === "open_agent_worker_tab") {
+          openCalls += 1;
+          liveTabs.add(openCalls);
+          return Promise.resolve({ tab: { tabId: openCalls } });
+        }
+        if (method === "chatgpt_worker_submit") {
+          submitted.set(args.tabId as number, args.prompt as string);
+          return Promise.resolve({ submitted: true });
+        }
+        if (method === "list_tabs") {
+          if (deferListTabs && !listTabsDeferred) {
+            listTabsDeferred = true;
+            return new Promise((resolve) => {
+              resolveListTabs = resolve;
+            });
+          }
+          return Promise.resolve({ tabs: [...liveTabs].map((tabId) => ({ tabId })) });
+        }
+        if (method === "read_chatgpt_worker_snapshot" || method === "read_chatgpt_worker") {
+          return Promise.reject(new Error("TAB_NOT_FOUND: worker tab closed"));
+        }
+        if (method === "close_tab") {
+          liveTabs.delete(args.tabId as number);
+          return Promise.resolve({ closed: true });
+        }
+        return Promise.resolve({});
+      },
+      observeWorkerTabs: async () => {
+        const response = await browser.request("list_tabs");
+        const tabs = (response as { tabs: Array<{ tabId: number }> }).tabs;
+        return {
+          tabIds: new Set(tabs.map((tab) => tab.tabId)),
+          snapshots: new Map<number, ChatGptWorkerSnapshot>(),
+        };
+      },
+    } as unknown as BrowserClient;
+    const runtime = new AgentRuntime(browser, { maxActiveWorkers: 1 });
+
+    const spawned = await runtime.spawnAgents(
+      [
+        { agent_id: "active", prompt: "active" },
+        { agent_id: "queued", prompt: "queued" },
+      ],
+      1,
+      "collection-reconciliation-race",
+    );
+    const collecting = runtime.collectAgents(spawned.run_id);
+    await flushUntil(() => listTabsDeferred, "reconciliation did not start its tab observation");
+
+    const view = await collecting;
+
+    expect(view.failed).toMatchObject([
+      {
+        agent_id: "active",
+        state: "FAILED_TERMINAL",
+        error: { code: "WORKER_TAB_CLOSED", retryable: false },
+      },
+    ]);
+    await flushUntil(() => openCalls === 2, "queued work was not dispatched after the missing worker was observed");
+    resolveListTabs?.({ tabs: [] });
+  });
+
+  it("does not accept an older reconciliation snapshot after newer generating evidence is cached", async () => {
+    let deferSnapshotRead = false;
+    let snapshotReadStarted = false;
+    let resolveSnapshotRead: ((value: unknown) => void) | undefined;
+    let openCalls = 0;
+    const liveTabs = new Set<number>();
+    const submitted = new Map<number, { prompt: string; timestamp: number }>();
+    const cached = { snapshot: undefined as ChatGptWorkerSnapshot | undefined };
+    const browser = {
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        if (method === "open_agent_worker_tab") {
+          openCalls += 1;
+          liveTabs.add(openCalls);
+          return Promise.resolve({ tab: { tabId: openCalls } });
+        }
+        if (method === "chatgpt_worker_submit") {
+          const timestamp = Date.now();
+          submitted.set(args.tabId as number, { prompt: args.prompt as string, timestamp });
+          return Promise.resolve({ submitted: true, snapshot: { revision: 1, timestamp } });
+        }
+        if (method === "list_tabs") {
+          return Promise.resolve({ tabs: [...liveTabs].map((tabId) => ({ tabId })) });
+        }
+        if (method === "read_chatgpt_worker_snapshot") {
+          if (deferSnapshotRead && !snapshotReadStarted) {
+            snapshotReadStarted = true;
+            return new Promise((resolve) => {
+              resolveSnapshotRead = resolve;
+            });
+          }
+          return Promise.resolve({});
+        }
+        if (method === "read_chatgpt_worker") {
+          const current = submitted.get(args.tabId as number);
+          if (!current) throw new Error("missing submitted prompt");
+          return Promise.resolve({
+            ready: true,
+            generating: true,
+            latestUserText: current.prompt,
+            latestUserTruncated: false,
+            latestAssistantText: "still generating",
+            latestAssistantTruncated: false,
+          });
+        }
+        return Promise.resolve({});
+      },
+      latestChatGptWorkerSnapshot: () => cached.snapshot,
+      forgetChatGptWorkerSnapshot: () => undefined,
+      observeWorkerTabs: async () => {
+        const response = await browser.request("list_tabs");
+        const tabs = (response as { tabs: Array<{ tabId: number }> }).tabs;
+        const tabIds = new Set(tabs.map((tab) => tab.tabId));
+        const snapshots = new Map<number, ChatGptWorkerSnapshot>();
+        for (const tabId of tabIds) {
+          const snapshotResponse = await browser.request("read_chatgpt_worker_snapshot", {
+            tabId,
+            afterRevision: 0,
+          });
+          const snapshot = (snapshotResponse as { snapshot?: ChatGptWorkerSnapshot }).snapshot;
+          if (snapshot) snapshots.set(tabId, snapshot);
+        }
+        return { tabIds, snapshots };
+      },
+    } as unknown as BrowserClient;
+    const runtime = new AgentRuntime(browser, { maxActiveWorkers: 1 });
+
+    const spawned = await runtime.spawnAgents(
+      [
+        { agent_id: "active", prompt: "active" },
+        { agent_id: "queued", prompt: "queued" },
+      ],
+      1,
+      "reconcile-stale-response",
+    );
+    const submission = submitted.get(1);
+    if (!submission) throw new Error("expected first submitted prompt");
+    deferSnapshotRead = true;
+
+    const collecting = runtime.collectAgents(spawned.run_id);
+    await flushUntil(() => snapshotReadStarted, "reconciliation did not start its snapshot observation");
+
+    cached.snapshot = {
+      ready: true,
+      generating: true,
+      latestUserText: submission.prompt,
+      latestUserTruncated: false,
+      latestAssistantText: "newer generation",
+      latestAssistantTruncated: false,
+      revision: 3,
+      timestamp: submission.timestamp + 2,
+    };
+    resolveSnapshotRead?.({
+      snapshot: {
+        ready: true,
+        generating: false,
+        latestUserText: submission.prompt,
+        latestUserTruncated: false,
+        latestAssistantText: `older terminal\n${completionMarker(submission.prompt)}`,
+        latestAssistantTruncated: false,
+        revision: 2,
+        timestamp: submission.timestamp + 1,
+      } satisfies ChatGptWorkerSnapshot,
+    });
+
+    await collecting;
+    expect(openCalls).toBe(1);
+    const view = await runtime.collectAgents(spawned.run_id);
+
+    expect(view.results).toEqual([]);
+    expect(view.pending).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agent_id: "active" }),
+    ]));
   });
 
 });

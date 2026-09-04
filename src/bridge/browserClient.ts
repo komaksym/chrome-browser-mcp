@@ -29,6 +29,12 @@ interface PendingRequest {
   timeout: NodeJS.Timeout;
 }
 
+/** Captures one consistent browser tab listing and the worker snapshots observed for those tabs. */
+export interface WorkerTabObservation {
+  tabIds: Set<number>;
+  snapshots: Map<number, ChatGptWorkerSnapshot>;
+}
+
 /** Distinguishes an invalid Native Messaging payload from a lost browser transport. */
 function writeFailure(error: unknown): BrowserError {
   if (error instanceof BrowserError) return error;
@@ -160,6 +166,54 @@ export class BrowserClient {
     this.chatGptWorkerSnapshots.delete(tabId);
   }
 
+  /** Observes leased worker tabs and validates their current snapshots at the browser boundary. */
+  async observeWorkerTabs(afterRevisionByTab: ReadonlyMap<number, number>): Promise<WorkerTabObservation | undefined> {
+    let response: unknown;
+    try {
+      response = await this.request<unknown>("list_tabs");
+    } catch {
+      return undefined;
+    }
+    if (!response || typeof response !== "object") return undefined;
+    const tabs = (response as { tabs?: unknown }).tabs;
+    if (!Array.isArray(tabs)) return undefined;
+
+    const tabIds = new Set<number>();
+    for (const tab of tabs) {
+      if (!tab || typeof tab !== "object") return undefined;
+      const tabId = (tab as { tabId?: unknown }).tabId;
+      if (typeof tabId !== "number" || !Number.isSafeInteger(tabId) || tabId <= 0) return undefined;
+      tabIds.add(tabId);
+    }
+
+    const snapshots = new Map<number, ChatGptWorkerSnapshot>();
+    for (const [tabId, afterRevision] of afterRevisionByTab) {
+      if (!tabIds.has(tabId)) continue;
+      const cached = this.chatGptWorkerSnapshots.get(tabId);
+      if (cached) snapshots.set(tabId, { ...cached });
+
+      try {
+        const current = await this.request<{ snapshot?: unknown }>("read_chatgpt_worker_snapshot", {
+          tabId,
+          afterRevision: Number.isSafeInteger(afterRevision) && afterRevision >= 0 ? afterRevision : 0,
+        });
+        const snapshot = validChatGptWorkerSnapshot(current?.snapshot);
+        const remembered = snapshot ? this.rememberChatGptWorkerSnapshot(tabId, snapshot) : undefined;
+        const latest = snapshots.get(tabId);
+        if (remembered && (!latest || remembered.revision > latest.revision)) {
+          snapshots.set(tabId, { ...remembered });
+        }
+      } catch (error) {
+        if (error instanceof BrowserError && error.code === "TAB_NOT_FOUND") {
+          tabIds.delete(tabId);
+          continue;
+        }
+        // An unrelated individual snapshot failure is inconclusive; the tab listing remains usable.
+      }
+    }
+    return { tabIds, snapshots };
+  }
+
   /** Sends one browser request and resolves it with the matching Native Messaging response. */
   async request<T>(method: BrowserMethod, params: Record<string, unknown> = {}): Promise<T> {
     if (!this.ready && method !== "browser_status") {
@@ -221,8 +275,11 @@ export class BrowserClient {
     if (message.type !== "event") return undefined;
     if (message.event === "agent_worker_tab_removed") {
       if (!Number.isSafeInteger(message.tabId) || message.tabId <= 0) return undefined;
+      const cached = this.chatGptWorkerSnapshots.get(message.tabId);
       this.chatGptWorkerSnapshots.delete(message.tabId);
-      return { type: "agent_worker_tab_removed", tabId: message.tabId };
+      return cached && completedWorkerMarker(cached)
+        ? { type: "agent_worker_tab_removed", tabId: message.tabId, snapshot: { ...cached } }
+        : { type: "agent_worker_tab_removed", tabId: message.tabId };
     }
     return this.cacheChatGptWorkerSnapshot(message);
   }
@@ -239,11 +296,21 @@ export class BrowserClient {
     }
     const snapshot = validChatGptWorkerSnapshot(message.snapshot);
     if (!snapshot) return undefined;
-    const current = this.chatGptWorkerSnapshots.get(message.tabId);
+    const cached = this.rememberChatGptWorkerSnapshot(message.tabId, snapshot);
+    if (!cached) return undefined;
+    return { type: "chatgpt_worker_snapshot", tabId: message.tabId, snapshot: { ...cached } };
+  }
+
+  /** Retains one newer validated snapshot without emitting a lifecycle event. */
+  private rememberChatGptWorkerSnapshot(
+    tabId: number,
+    snapshot: ChatGptWorkerSnapshot,
+  ): ChatGptWorkerSnapshot | undefined {
+    const current = this.chatGptWorkerSnapshots.get(tabId);
     if (current && snapshot.revision <= current.revision) return undefined;
     const cached = current ? preserveCompletedWorkerEvidence(current, snapshot) : snapshot;
-    this.chatGptWorkerSnapshots.set(message.tabId, cached);
-    return { type: "chatgpt_worker_snapshot", tabId: message.tabId, snapshot: { ...cached } };
+    this.chatGptWorkerSnapshots.set(tabId, cached);
+    return cached;
   }
 
   /** Delivers one lifecycle event without allowing observers to mutate cached evidence or disrupt parsing. */

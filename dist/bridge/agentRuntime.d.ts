@@ -102,6 +102,9 @@ export declare class AgentRuntime {
     private readonly spawnRequests;
     private readonly maxActiveWorkers;
     private schedulerOperation;
+    private reconciliationInFlight;
+    private reconciliationRequested;
+    private readonly pendingWorkerRemovalSnapshots;
     /** Creates a runtime that owns worker tabs through the supplied browser bridge. */
     constructor(browser: BrowserClient, options?: AgentRuntimeOptions);
     /** Creates or replays one run for a stable request identity. */
@@ -190,16 +193,14 @@ export declare class AgentRuntime {
     private cancelAndSchedule;
     /** Runs the scheduler while holding its serialized operation slot. */
     private pumpScheduler;
-    /** Runs the scheduler with at most one evidence-based repair attempt per pass. */
-    private pumpSchedulerWithReconciliation;
     /** Returns whether blocked global capacity has at least one job ready to dispatch. */
     private hasDispatchEligibleJob;
     /** Reconciles leased worker tabs against one current browser tab observation. */
     private reconcileWorkerLeases;
-    /** Reads current tab metadata without treating a malformed or failed observation as proof of absence. */
-    private currentBrowserTabIds;
-    /** Queries current worker state for reconciliation, bypassing an observation that may now be stale. */
-    private readCurrentSnapshot;
+    /** Starts one evidence-based reconciliation without blocking lifecycle-driven scheduling. */
+    private startReconciliation;
+    /** Queues evidence-based repairs behind lifecycle and collection operations for each owning run. */
+    private enqueueReconciliationRepairs;
     /** Applies the shared terminal transition for a missing current worker tab. */
     private terminalizeWorkerTabClosed;
     /** Reserves all currently available global and per-run worker slots before starting browser operations. */

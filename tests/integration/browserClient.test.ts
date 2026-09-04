@@ -33,6 +33,123 @@ describe("BrowserClient", () => {
     expect(client.status()).toEqual({ connected: true, extensionVersion: "0.1.0", extensionId: "test-extension" });
   });
 
+  it("observes leased tabs and returns the newest validated worker evidence", async () => {
+    const fromExtension = new PassThrough();
+    const toExtension = new PassThrough();
+    const client = new BrowserClient(fromExtension, toExtension, 2_000);
+    writeNativeMessage(fromExtension, {
+      type: "ready",
+      extensionVersion: "0.1.0",
+      extensionId: "test-extension",
+    });
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "chatgpt_worker_snapshot",
+      tabId: 42,
+      snapshot: {
+        ready: true,
+        generating: true,
+        latestUserText: "cached turn",
+        latestUserTruncated: false,
+        latestAssistantText: "cached",
+        latestAssistantTruncated: false,
+        revision: 4,
+        timestamp: 1_700_000_000_004,
+      },
+    });
+
+    const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+    new NativeMessageReader(
+      toExtension,
+      (message) => {
+        const request = message as { id: string; method: string; params: Record<string, unknown> };
+        requests.push(request);
+        if (request.method === "list_tabs") {
+          writeNativeMessage(fromExtension, { type: "response", id: request.id, result: { tabs: [{ tabId: 42 }] } });
+        } else {
+          writeNativeMessage(fromExtension, {
+            type: "response",
+            id: request.id,
+            result: {
+              snapshot: {
+                ready: true,
+                generating: false,
+                latestUserText: "cached turn",
+                latestUserTruncated: false,
+                latestAssistantText: "current",
+                latestAssistantTruncated: false,
+                revision: 5,
+                timestamp: 1_700_000_000_005,
+              },
+            },
+          });
+        }
+      },
+      (error) => {
+        throw error;
+      },
+    );
+
+    const observation = await client.observeWorkerTabs(new Map([[42, 4]]));
+
+    expect(observation).toEqual({
+      tabIds: new Set([42]),
+      snapshots: new Map([
+        [
+          42,
+          {
+            ready: true,
+            generating: false,
+            latestUserText: "cached turn",
+            latestUserTruncated: false,
+            latestAssistantText: "current",
+            latestAssistantTruncated: false,
+            revision: 5,
+            timestamp: 1_700_000_000_005,
+          },
+        ],
+      ]),
+    });
+    expect(requests.map((request) => request.method)).toEqual(["list_tabs", "read_chatgpt_worker_snapshot"]);
+    expect(requests[1]?.params).toEqual({ tabId: 42, afterRevision: 4 });
+    expect(client.latestChatGptWorkerSnapshot(42)?.revision).toBe(5);
+  });
+
+  it("treats a worker closed during snapshot observation as missing", async () => {
+    const fromExtension = new PassThrough();
+    const toExtension = new PassThrough();
+    const client = new BrowserClient(fromExtension, toExtension, 2_000);
+    writeNativeMessage(fromExtension, {
+      type: "ready",
+      extensionVersion: "0.1.0",
+      extensionId: "test-extension",
+    });
+
+    new NativeMessageReader(
+      toExtension,
+      (message) => {
+        const request = message as { id: string; method: string };
+        if (request.method === "list_tabs") {
+          writeNativeMessage(fromExtension, { type: "response", id: request.id, result: { tabs: [{ tabId: 42 }] } });
+          return;
+        }
+        writeNativeMessage(fromExtension, {
+          type: "response",
+          id: request.id,
+          error: { code: "TAB_NOT_FOUND", message: "worker tab was closed" },
+        });
+      },
+      (error) => {
+        throw error;
+      },
+    );
+
+    await expect(client.observeWorkerTabs(new Map([[42, 0]]))).resolves.toEqual({
+      tabIds: new Set(),
+      snapshots: new Map(),
+    });
+  });
+
   it("refuses browser calls before the extension is ready", async () => {
     const client = new BrowserClient(new PassThrough(), new PassThrough(), 50);
     await expect(client.request("list_tabs")).rejects.toThrow("not connected");
@@ -455,6 +572,42 @@ describe("BrowserClient", () => {
     });
 
     expect(events).toEqual([{ type: "agent_worker_tab_removed", tabId: 42 }]);
+    expect(client.latestChatGptWorkerSnapshot(42)).toBeUndefined();
+  });
+
+  it("carries cached verified completion evidence through a worker-tab removal", () => {
+    const fromExtension = new PassThrough();
+    const client = new BrowserClient(fromExtension, new PassThrough(), 2_000);
+    const marker = "<<<SUBAGENT_DONE:11111111-1111-1111-1111-111111111111>>>";
+    const snapshot = {
+      ready: true,
+      generating: false,
+      latestUserText: `worker prompt\n${marker}`,
+      latestUserTruncated: false,
+      latestAssistantText: `worker result\n${marker}`,
+      latestAssistantTruncated: false,
+      revision: 2,
+      timestamp: 1_700_000_000_002,
+    };
+    const events: unknown[] = [];
+    client.subscribeLifecycle((event) => events.push(event));
+
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "chatgpt_worker_snapshot",
+      tabId: 42,
+      snapshot,
+    });
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "agent_worker_tab_removed",
+      tabId: 42,
+    });
+
+    expect(events).toEqual([
+      { type: "chatgpt_worker_snapshot", tabId: 42, snapshot },
+      { type: "agent_worker_tab_removed", tabId: 42, snapshot },
+    ]);
     expect(client.latestChatGptWorkerSnapshot(42)).toBeUndefined();
   });
 

@@ -102,6 +102,9 @@ export class AgentRuntime {
     spawnRequests = new Map();
     maxActiveWorkers;
     schedulerOperation = Promise.resolve();
+    reconciliationInFlight = false;
+    reconciliationRequested = false;
+    pendingWorkerRemovalSnapshots = new Map();
     /** Creates a runtime that owns worker tabs through the supplied browser bridge. */
     constructor(browser, options = {}) {
         this.browser = browser;
@@ -196,21 +199,25 @@ export class AgentRuntime {
     /** Serializes validated worker lifecycle observations through the runtime state machine. */
     handleBrowserLifecycleEvent(event) {
         if (event.type === "ready") {
-            void this.enqueueSchedulerOperation(async () => {
-                await this.reconcileWorkerLeases();
-                await this.pumpScheduler(false);
-            });
+            this.startReconciliation(true);
+            void this.enqueueSchedulerOperation(() => this.pumpScheduler(false));
             return;
         }
         const owner = this.jobForWorkerTab(event.tabId);
         if (!owner)
             return;
         const { run, job } = owner;
+        if (event.type === "agent_worker_tab_removed" && event.snapshot) {
+            const pending = this.pendingWorkerRemovalSnapshots.get(event.tabId);
+            if (!pending || event.snapshot.revision > pending.revision) {
+                this.pendingWorkerRemovalSnapshots.set(event.tabId, { ...event.snapshot });
+            }
+        }
         void this.enqueueRunOperation(run, async () => {
             if (job.tabId !== event.tabId)
                 return;
             if (event.type === "agent_worker_tab_removed") {
-                if (this.terminalizeWorkerTabClosed(run, job, event.tabId))
+                if (this.terminalizeWorkerTabClosed(run, job, event.tabId, event.snapshot))
                     await this.schedule();
                 return;
             }
@@ -353,21 +360,13 @@ export class AgentRuntime {
     }
     /** Runs the scheduler while holding its serialized operation slot. */
     async pumpScheduler(allowReconciliation = true) {
-        return this.pumpSchedulerWithReconciliation(allowReconciliation);
-    }
-    /** Runs the scheduler with at most one evidence-based repair attempt per pass. */
-    async pumpSchedulerWithReconciliation(allowReconciliation) {
-        let reconciliationAttempted = false;
         while (true) {
             const attempts = this.reserveAvailableJobs();
             if (attempts.length === 0) {
                 if (allowReconciliation &&
-                    !reconciliationAttempted &&
                     this.activeWorkerCount() >= this.maxActiveWorkers &&
                     this.hasDispatchEligibleJob()) {
-                    reconciliationAttempted = true;
-                    if (await this.reconcileWorkerLeases())
-                        continue;
+                    this.startReconciliation();
                 }
                 return;
             }
@@ -385,84 +384,111 @@ export class AgentRuntime {
             return attempt && job.tabId !== undefined ? [attempt] : [];
         }));
         if (leasedJobs.length === 0)
-            return false;
-        const tabIds = await this.currentBrowserTabIds();
-        if (!tabIds)
-            return false;
-        let releasedCapacity = false;
+            return;
+        if (typeof this.browser.observeWorkerTabs !== "function")
+            return;
+        const afterRevisionByTab = new Map();
         for (const attempt of leasedJobs) {
-            if (!this.isDispatchAttemptActive(attempt))
-                continue;
             const tabId = attempt.job.tabId;
             if (tabId === undefined)
                 continue;
-            if (!tabIds.has(tabId)) {
-                releasedCapacity = this.terminalizeWorkerTabClosed(attempt.run, attempt.job, tabId) || releasedCapacity;
+            const cached = typeof this.browser.latestChatGptWorkerSnapshot === "function"
+                ? this.browser.latestChatGptWorkerSnapshot(tabId)
+                : undefined;
+            afterRevisionByTab.set(tabId, Math.max(attempt.job.snapshotBaselineRevision ?? 0, attempt.job.snapshotLastRevision ?? 0, cached?.revision ?? 0));
+        }
+        const observation = await this.browser.observeWorkerTabs(afterRevisionByTab);
+        if (!observation)
+            return;
+        const repairs = [];
+        for (const attempt of leasedJobs) {
+            const tabId = attempt.job.tabId;
+            if (tabId === undefined)
+                continue;
+            if (!observation.tabIds.has(tabId)) {
+                const cached = typeof this.browser.latestChatGptWorkerSnapshot === "function"
+                    ? this.browser.latestChatGptWorkerSnapshot(tabId)
+                    : undefined;
+                repairs.push({ attempt, tabId, missing: true, snapshot: cached });
                 continue;
             }
-            const snapshot = await this.readCurrentSnapshot(attempt);
-            if (!snapshot)
-                continue;
-            const outcome = this.acceptWorkerSnapshot(attempt, snapshot);
-            if (outcome === "accepted")
-                releasedCapacity = true;
+            const snapshot = observation.snapshots.get(tabId);
+            if (snapshot)
+                repairs.push({ attempt, tabId, missing: false, snapshot });
         }
-        return releasedCapacity;
+        await this.enqueueReconciliationRepairs(repairs);
     }
-    /** Reads current tab metadata without treating a malformed or failed observation as proof of absence. */
-    async currentBrowserTabIds() {
-        try {
-            const response = await this.browser.request("list_tabs");
-            if (!response || typeof response !== "object")
-                return undefined;
-            const tabs = response.tabs;
-            if (!Array.isArray(tabs))
-                return undefined;
-            const tabIds = new Set();
-            for (const tab of tabs) {
-                if (!tab || typeof tab !== "object")
-                    return undefined;
-                const tabId = tab.tabId;
-                if (typeof tabId !== "number" || !Number.isSafeInteger(tabId) || tabId <= 0)
-                    return undefined;
-                tabIds.add(tabId);
+    /** Starts one evidence-based reconciliation without blocking lifecycle-driven scheduling. */
+    startReconciliation(retryWhenInFlight = false) {
+        if (this.reconciliationInFlight) {
+            this.reconciliationRequested ||= retryWhenInFlight;
+            return;
+        }
+        this.reconciliationInFlight = true;
+        void this.reconcileWorkerLeases()
+            .catch(() => undefined)
+            .finally(() => {
+            this.reconciliationInFlight = false;
+            if (this.reconciliationRequested) {
+                this.reconciliationRequested = false;
+                this.startReconciliation(true);
             }
-            return tabIds;
-        }
-        catch {
-            return undefined;
-        }
+        });
     }
-    /** Queries current worker state for reconciliation, bypassing an observation that may now be stale. */
-    async readCurrentSnapshot(attempt) {
-        const { job } = attempt;
-        const tabId = job.tabId;
-        if (tabId === undefined || !this.isDispatchAttemptActive(attempt))
-            return undefined;
-        const cached = typeof this.browser.latestChatGptWorkerSnapshot === "function"
-            ? this.browser.latestChatGptWorkerSnapshot(tabId)
-            : undefined;
-        try {
-            const response = await this.browser.request("read_chatgpt_worker_snapshot", {
-                tabId,
-                afterRevision: Math.max(job.snapshotBaselineRevision ?? 0, job.snapshotLastRevision ?? 0, cached?.revision ?? 0),
-            });
-            if (!this.isDispatchAttemptActive(attempt))
-                return undefined;
-            const snapshot = response?.snapshot;
-            if (this.acceptFreshSnapshot(job, snapshot))
-                return snapshot;
+    /** Queues evidence-based repairs behind lifecycle and collection operations for each owning run. */
+    enqueueReconciliationRepairs(repairs) {
+        const byRun = new Map();
+        for (const repair of repairs) {
+            const runRepairs = byRun.get(repair.attempt.run) ?? [];
+            runRepairs.push(repair);
+            byRun.set(repair.attempt.run, runRepairs);
         }
-        catch {
-            // Snapshot retrieval is an optimization; reconciliation must not reclaim on uncertain evidence.
-        }
-        return undefined;
+        const operations = [...byRun].map(([run, runRepairs]) => this.enqueueRunOperation(run, async () => {
+            let releasedCapacity = false;
+            for (const repair of runRepairs) {
+                if (!this.isDispatchAttemptActive(repair.attempt))
+                    continue;
+                if (repair.missing) {
+                    releasedCapacity =
+                        this.terminalizeWorkerTabClosed(run, repair.attempt.job, repair.tabId, repair.snapshot) ||
+                            releasedCapacity;
+                    continue;
+                }
+                if (!repair.snapshot || !this.acceptFreshSnapshot(repair.attempt.job, repair.snapshot))
+                    continue;
+                const outcome = this.acceptWorkerSnapshot(repair.attempt, repair.snapshot);
+                if (outcome === "accepted")
+                    releasedCapacity = true;
+            }
+            if (releasedCapacity)
+                await this.schedule();
+        }));
+        return Promise.all(operations).then(() => undefined);
     }
     /** Applies the shared terminal transition for a missing current worker tab. */
-    terminalizeWorkerTabClosed(run, job, tabId) {
+    terminalizeWorkerTabClosed(run, job, tabId, cachedSnapshot) {
         if (job.tabId !== tabId)
             return false;
+        const attempt = this.currentDispatchAttempt(run, job);
+        const latest = typeof this.browser.latestChatGptWorkerSnapshot === "function"
+            ? this.browser.latestChatGptWorkerSnapshot(tabId)
+            : undefined;
+        const pending = this.pendingWorkerRemovalSnapshots.get(tabId);
+        const snapshot = [latest, cachedSnapshot, pending]
+            .filter((candidate) => candidate !== undefined)
+            .reduce((newest, candidate) => (!newest || candidate.revision > newest.revision ? candidate : newest), undefined);
+        if (attempt && snapshot && this.acceptFreshSnapshot(job, snapshot)) {
+            if (this.acceptWorkerSnapshot(attempt, snapshot) === "accepted") {
+                job.tabId = undefined;
+                this.pendingWorkerRemovalSnapshots.delete(tabId);
+                if (typeof this.browser.forgetChatGptWorkerSnapshot === "function") {
+                    this.browser.forgetChatGptWorkerSnapshot(tabId);
+                }
+                return true;
+            }
+        }
         job.tabId = undefined;
+        this.pendingWorkerRemovalSnapshots.delete(tabId);
         if (typeof this.browser.forgetChatGptWorkerSnapshot === "function") {
             this.browser.forgetChatGptWorkerSnapshot(tabId);
         }
@@ -472,7 +498,6 @@ export class AgentRuntime {
             run.cancellationRequested) {
             return false;
         }
-        const attempt = this.currentDispatchAttempt(run, job);
         if (!attempt)
             return false;
         job.retryRequested = false;
@@ -656,6 +681,7 @@ export class AgentRuntime {
             // A failed cleanup must not release the worker tab to generic MCP tools.
         }
         finally {
+            this.pendingWorkerRemovalSnapshots.delete(tabId);
             if (typeof this.browser.forgetChatGptWorkerSnapshot === "function") {
                 this.browser.forgetChatGptWorkerSnapshot(tabId);
             }
@@ -746,6 +772,11 @@ export class AgentRuntime {
         if (!this.isWorkerSnapshot(value))
             return false;
         if (job.submittedAt === undefined || value.timestamp < job.submittedAt)
+            return false;
+        const latest = job.tabId !== undefined && typeof this.browser.latestChatGptWorkerSnapshot === "function"
+            ? this.browser.latestChatGptWorkerSnapshot(job.tabId)
+            : undefined;
+        if (latest && latest.revision > value.revision)
             return false;
         const baseline = Math.max(job.snapshotBaselineRevision ?? 0, job.snapshotLastRevision ?? 0);
         if (value.revision <= baseline)
@@ -980,6 +1011,10 @@ export class AgentRuntime {
             await this.recoverFinishedObservation(attempt, worker);
         }
         catch (error) {
+            if (errorDetails(error).code === "TAB_NOT_FOUND" && this.terminalizeWorkerTabClosed(run, job, tabId)) {
+                await this.schedule();
+                return;
+            }
             await this.failJob(attempt, error);
         }
     }

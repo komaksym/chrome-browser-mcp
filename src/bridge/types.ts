@@ -69,7 +69,7 @@ export interface NativeAgentWorkerTabRemovedEvent {
 export type BrowserLifecycleEvent =
   | { type: "ready"; extensionVersion: string; extensionId: string }
   | { type: "chatgpt_worker_snapshot"; tabId: number; snapshot: ChatGptWorkerSnapshot }
-  | { type: "agent_worker_tab_removed"; tabId: number };
+  | { type: "agent_worker_tab_removed"; tabId: number; snapshot?: ChatGptWorkerSnapshot };
 
 export type IncomingNativeMessage =
   | NativeResponse
