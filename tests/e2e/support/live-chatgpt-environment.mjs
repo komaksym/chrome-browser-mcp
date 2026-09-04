@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -412,10 +412,10 @@ async function requireExpectedTools(client) {
   return tools.tools.length;
 }
 
-export async function startLiveChatGptEnvironment({ root, env = process.env, verifyArtifacts = true } = {}) {
+export async function startLiveChatGptEnvironment({ root, env = process.env } = {}) {
   const resolvedRoot = resolve(root ?? join(import.meta.dirname, "../../.."));
   const config = loadLiveSmokeConfig({ env, root: resolvedRoot });
-  if (verifyArtifacts) verifyCommittedRuntimeArtifacts(resolvedRoot);
+  verifyCommittedRuntimeArtifacts(resolvedRoot);
 
   const canary = await fetchCanaryRef(config.canary, env.GITHUB_TOKEN);
   let stack;
@@ -505,7 +505,7 @@ export async function startLiveChatGptEnvironment({ root, env = process.env, ver
       await stack?.close();
     };
 
-    return { config, report, stack, preflightChatGpt, close };
+    return { report, preflightChatGpt, close };
   } catch (error) {
     await client?.close().catch(() => undefined);
     await stopTunnel(tunnel);
@@ -514,6 +514,3 @@ export async function startLiveChatGptEnvironment({ root, env = process.env, ver
   }
 }
 
-export async function removeLiveSmokeProfile(profileDir) {
-  await rm(profileDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-}

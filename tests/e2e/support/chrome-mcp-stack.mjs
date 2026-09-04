@@ -12,7 +12,7 @@ function unique(values) {
   return [...new Set(values.filter((value) => typeof value === "string" && value.length > 0))];
 }
 
-export async function claimLoopbackPort(requestedPort = 0) {
+async function claimLoopbackPort(requestedPort = 0) {
   const server = createServer();
   try {
     await new Promise((resolvePromise, reject) => {
@@ -29,7 +29,7 @@ export async function claimLoopbackPort(requestedPort = 0) {
   }
 }
 
-export function defaultNativeHostDirectories(homeDir) {
+function defaultNativeHostDirectories(homeDir) {
   return unique([
     process.platform === "darwin"
       ? join(homeDir, "Library/Application Support/Google/Chrome/NativeMessagingHosts")
@@ -322,16 +322,9 @@ export async function startChromeMcpStack({
 
     return {
       browser,
-      browserProcess,
-      chromePath: executable,
       context,
-      debugPort: claimedDebugPort,
-      debugUrl,
-      extensionId: EXTENSION_ID,
       mcpPort: claimedMcpPort,
       mcpUrl: `http://127.0.0.1:${claimedMcpPort}/mcp`,
-      nativeHostPaths: nativeHost.paths,
-      profileDir,
       close,
     };
   } catch (error) {
