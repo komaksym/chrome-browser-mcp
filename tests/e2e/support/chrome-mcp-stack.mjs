@@ -112,13 +112,12 @@ async function installNativeHostManifests({ root, homeDir, nativeHostDirs = [] }
   };
 }
 
-async function findExistingNativeHostManifest({ homeDir, nativeHostDirs = [] }) {
-  const directories = unique([
-    ...configuredNativeHostDirectories(),
-    ...nativeHostDirs,
-    ...defaultNativeHostDirectories(homeDir),
-  ]);
+async function findExistingNativeHostManifest({ root, homeDir, nativeHostDirs = [] }) {
+  const directories = unique([...nativeHostDirs, ...defaultNativeHostDirectories(homeDir)]);
   const checkedPaths = directories.map((directory) => join(directory, `${NATIVE_HOST_NAME}.json`));
+  const expectedBridgeMarker = `# chrome-browser-mcp-bridge-base64: ${Buffer.from(
+    join(root, "dist/bridge/index.js"),
+  ).toString("base64")}`;
   for (const path of checkedPaths) {
     try {
       const manifest = JSON.parse(await readFile(path, "utf8"));
@@ -126,13 +125,15 @@ async function findExistingNativeHostManifest({ homeDir, nativeHostDirs = [] }) 
       if (manifest.name !== NATIVE_HOST_NAME) continue;
       if (!origins.includes(`chrome-extension://${EXTENSION_ID}/`)) continue;
       if (typeof manifest.path !== "string" || !existsSync(manifest.path)) continue;
+      const installedWrapper = await readFile(manifest.path, "utf8");
+      if (!installedWrapper.split(/\r?\n/).includes(expectedBridgeMarker)) continue;
       return { paths: [path], restore: async () => undefined };
     } catch {
       // Keep looking for a valid installed user-level native host.
     }
   }
   throw new Error(
-    `No valid installed native host was found. Checked: ${checkedPaths.join(", ")}. Run npm run install:mac from this checkout first.`,
+    `No valid installed native host for the current checkout was found. Checked: ${checkedPaths.join(", ")}. Run npm run install:mac from this checkout first.`,
   );
 }
 
@@ -275,7 +276,7 @@ export async function startChromeMcpStack({
   try {
     nativeHost = provisionNativeHost
       ? await installNativeHostManifests({ root, homeDir, nativeHostDirs })
-      : await findExistingNativeHostManifest({ homeDir, nativeHostDirs });
+      : await findExistingNativeHostManifest({ root, homeDir, nativeHostDirs });
     executable = resolveChromeExecutable({ chromePath, requireGoogleChrome });
     await mkdir(profileDir, { recursive: true });
 
