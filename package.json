@@ -27,8 +27,6 @@
     "uninstall:mac": "bash scripts/uninstall-macos.sh",
     "audit": "npm audit --audit-level=high",
     "verify:local": "node scripts/verify-local.mjs",
-    "verify:local2": "CHROME_MCP_URL=http://127.0.0.1:2093/mcp node scripts/verify-local.mjs",
-    "verify:local3": "CHROME_MCP_URL=http://127.0.0.1:2095/mcp node scripts/verify-local.mjs",
     "configure:tunnel": "bash scripts/configure-tunnel.sh",
     "configure:tunnel:live-smoke": "bash scripts/configure-live-smoke-tunnel.sh"
   },
