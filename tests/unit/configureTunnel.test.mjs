@@ -19,11 +19,10 @@ describe("configure-tunnel instance routing", () => {
     const capture = join(sandbox, "tunnel-args.txt");
     const nodeBinDir = dirname(process.execPath);
     const tunnelId = "tunnel_0123456789abcdef0123456789abcdef";
-    const newline = String.fromCharCode(10);
     mkdirSync(fakeBin, { recursive: true });
     writeExecutable(
       join(fakeBin, "tunnel-client"),
-      ["#!/bin/bash", "printf '%s\\n' \"$@\" > \"$CAPTURE_FILE\""].join(newline),
+      ["#!/bin/bash", "printf '%s\\n' \"$@\" > \"$CAPTURE_FILE\""].join("\n"),
     );
 
     try {
@@ -37,11 +36,11 @@ describe("configure-tunnel instance routing", () => {
         encoding: "utf8",
       });
 
-      expect(result.status, [result.stdout, result.stderr].join(newline)).toBe(0);
+      expect(result.status, [result.stdout, result.stderr].join("\n")).toBe(0);
       const args = readFileSync(capture, "utf8");
-      expect(args).toContain(["--profile", "chrome-browser-mcp-3", ""].join(newline));
-      expect(args).toContain(["--mcp-server-url", "http://127.0.0.1:2095/mcp", ""].join(newline));
-      expect(args).toContain(["--control-plane-api-key-ref", "env:CONTROL_PLANE_API_KEY_AGENT", ""].join(newline));
+      expect(args).toContain(["--profile", "chrome-browser-mcp-3", ""].join("\n"));
+      expect(args).toContain(["--mcp-server-url", "http://127.0.0.1:2095/mcp", ""].join("\n"));
+      expect(args).toContain(["--control-plane-api-key-ref", "env:CONTROL_PLANE_API_KEY_AGENT", ""].join("\n"));
       expect(result.stdout).toContain("chrome3");
       expect(result.stdout).toContain("2095");
     } finally {
@@ -57,8 +56,8 @@ describe("configure-tunnel instance routing", () => {
     ], { cwd: repoRoot, encoding: "utf8" });
 
     expect(result.status).toBe(2);
-    expect([result.stdout, result.stderr].join(String.fromCharCode(10))).toContain(
-      "expected chrome, chrome2, or chrome3",
+    expect([result.stdout, result.stderr].join("\n")).toContain(
+      "Unknown Chrome instance: chrome-browser-mcp-2",
     );
   });
 
@@ -71,6 +70,6 @@ describe("configure-tunnel instance routing", () => {
     ], { cwd: repoRoot, encoding: "utf8" });
 
     expect(result.status).toBe(2);
-    expect([result.stdout, result.stderr].join(String.fromCharCode(10))).toContain("Usage:");
+    expect([result.stdout, result.stderr].join("\n")).toContain("Usage:");
   });
 });
