@@ -202,6 +202,11 @@ export async function waitForBridgeReady(url, timeoutMs = 20_000) {
   throw new Error(`Bridge did not become ready: ${lastError instanceof Error ? lastError.message : "timeout"}`);
 }
 
+export function profileProcessPattern(profileDir) {
+  const escaped = profileDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return `--user-data-dir=${escaped}`;
+}
+
 async function stopBrowserProcess(browserProcess, profileDir) {
   if (browserProcess && browserProcess.exitCode === null) {
     browserProcess.kill("SIGTERM");
@@ -212,9 +217,10 @@ async function stopBrowserProcess(browserProcess, profileDir) {
     if (browserProcess.exitCode === null) browserProcess.kill("SIGKILL");
   }
   if (process.platform !== "win32") {
-    spawnSync("pkill", ["-TERM", "-f", `--user-data-dir=${profileDir}`], { stdio: "ignore" });
+    const processPattern = profileProcessPattern(profileDir);
+    spawnSync("pkill", ["-TERM", "-f", processPattern], { stdio: "ignore" });
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
-    spawnSync("pkill", ["-KILL", "-f", `--user-data-dir=${profileDir}`], { stdio: "ignore" });
+    spawnSync("pkill", ["-KILL", "-f", processPattern], { stdio: "ignore" });
   }
 }
 
