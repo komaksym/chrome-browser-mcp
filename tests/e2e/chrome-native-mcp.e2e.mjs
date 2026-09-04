@@ -1,16 +1,14 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, writeFile, rm, unlink } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
-import { chromium } from "@playwright/test";
+import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { EXTENSION_ID, startChromeMcpStack } from "./support/chrome-mcp-stack.mjs";
 
 const ROOT = resolve(import.meta.dirname, "../..");
-const EXTENSION_ID = "jlpddlfiallighiohmhhkemgbhofpnha";
 
 const missingOrigin = spawnSync(process.execPath, [join(ROOT, "dist/bridge/index.js")], { encoding: "utf8" });
 assert.equal(missingOrigin.status, 2, `Native host must reject a missing extension origin: ${missingOrigin.stderr}`);
@@ -21,25 +19,9 @@ async function listen(server) {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolvePromise);
   });
-  return server.address().port;
-}
-
-async function waitForReady(url, timeoutMs = 20_000) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(url);
-      if (response.ok) {
-        const body = await response.json();
-        if (body.browser?.connected) return body;
-      }
-    } catch (error) {
-      lastError = error;
-    }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
-  }
-  throw new Error(`Bridge did not become ready: ${lastError ?? "timeout"}`);
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Could not resolve test HTTP port");
+  return address.port;
 }
 
 const tempHome = await mkdtemp(join(tmpdir(), "chrome-browser-mcp-e2e-"));
@@ -53,143 +35,37 @@ const testServer = createServer((req, res) => {
   }
 });
 const pagePort = await listen(testServer);
-const portProbe = createServer();
-const mcpPort = await listen(portProbe);
-await new Promise((resolvePromise) => portProbe.close(resolvePromise));
-const debugProbe = createServer();
-const debugPort = await listen(debugProbe);
-await new Promise((resolvePromise) => debugProbe.close(resolvePromise));
-const configuredNativeHostDirs = [
-  process.env.CHROME_NATIVE_HOST_DIR,
-  ...(process.env.CHROME_NATIVE_HOST_DIRS?.split(delimiter) ?? []),
-].filter((value) => typeof value === "string" && value.length > 0);
-const nativeHostDirs = [...new Set([
-  ...configuredNativeHostDirs,
-  join(tempHome, ".config/chromium/NativeMessagingHosts"),
-  join(tempHome, ".config/google-chrome/NativeMessagingHosts"),
-  join(tempHome, ".config/google-chrome-for-testing/NativeMessagingHosts"),
-  join(tempHome, ".config/chrome-for-testing/NativeMessagingHosts"),
-])];
-const nativeHostPaths = nativeHostDirs.map((directory) => join(directory, "com.komaksym.chrome_browser_mcp.json"));
-const previousNativeHostManifests = new Map();
-const nativeHostManifest = JSON.stringify(
-  {
-    name: "com.komaksym.chrome_browser_mcp",
-    description: "Chrome Browser MCP E2E host",
-    path: join(ROOT, "scripts/native-host-wrapper.sh"),
-    type: "stdio",
-    allowed_origins: [`chrome-extension://${EXTENSION_ID}/`],
-  },
-  null,
-  2,
-);
-for (const [index, nativeHostDir] of nativeHostDirs.entries()) {
-  const nativeHostPath = nativeHostPaths[index];
-  try {
-    previousNativeHostManifests.set(nativeHostPath, await readFile(nativeHostPath, "utf8"));
-  } catch {
-    previousNativeHostManifests.set(nativeHostPath, undefined);
-  }
-  await mkdir(nativeHostDir, { recursive: true });
-  await writeFile(nativeHostPath, nativeHostManifest);
-}
 
-let browser;
-let browserProcess;
+let stack;
 let client;
 let testFailure;
 let cleanupFailure;
 try {
-  const bundledChromiumPath = chromium.executablePath();
-  const chromiumPath = process.env.CHROMIUM_PATH ?? (existsSync(bundledChromiumPath) ? bundledChromiumPath : "/usr/bin/chromium");
-  browserProcess = spawn(
-    chromiumPath,
-    [
-      "--no-sandbox",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--enable-unsafe-extension-debugging",
-      `--remote-debugging-port=${debugPort}`,
-      `--user-data-dir=${profileDir}`,
-      `--disable-extensions-except=${join(ROOT, "dist/extension")}`,
-      `--load-extension=${join(ROOT, "dist/extension")}`,
-      "about:blank",
-    ],
-    {
-      env: {
-        ...process.env,
-        HOME: tempHome,
-        XDG_CONFIG_HOME: join(tempHome, ".config"),
-        CHROME_MCP_PORT: String(mcpPort),
-      },
-      stdio: ["ignore", "ignore", "pipe"],
-    },
-  );
-  let browserErrors = "";
-  browserProcess.stderr.on("data", (chunk) => {
-    browserErrors += chunk.toString();
+  stack = await startChromeMcpStack({
+    root: ROOT,
+    homeDir: tempHome,
+    profileDir,
+    chromePath: process.env.CHROMIUM_PATH,
+    noSandbox: true,
   });
-
-  const debugUrl = `http://127.0.0.1:${debugPort}`;
-  const deadline = Date.now() + 20_000;
-  let debugReady = false;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`${debugUrl}/json/version`);
-      if (response.ok) {
-        debugReady = true;
-        break;
-      }
-    } catch {
-      // Chromium is still starting.
-    }
-    if (browserProcess.exitCode !== null) throw new Error(`Chromium exited early (${browserProcess.exitCode}): ${browserErrors}`);
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
-  }
-  if (!debugReady) throw new Error(`Chromium DevTools did not become ready: ${browserErrors}`);
-  browser = await chromium.connectOverCDP(debugUrl);
-  const context = browser.contexts()[0];
-  assert.ok(context, "Expected Chromium default context");
+  const { browser, context, mcpPort, mcpUrl } = stack;
 
   const first = await context.newPage();
   await first.goto(`http://127.0.0.1:${pagePort}/one?access_token=never-leak-tab-token#private-tab-fragment`);
   const second = await context.newPage();
   await second.goto(`http://127.0.0.1:${pagePort}/two`);
 
-  try {
-    await waitForReady(`http://127.0.0.1:${mcpPort}/healthz`);
-  } catch (error) {
-    const workerDiagnostics = await Promise.all(
-      context.serviceWorkers().map(async (worker) => {
-        let lastNativeError = null;
-        if (worker.url().startsWith(`chrome-extension://${EXTENSION_ID}/`)) {
-          try {
-            lastNativeError = await worker.evaluate(() => globalThis.__chromeBrowserMcpLastNativeError ?? null);
-          } catch (diagnosticError) {
-            lastNativeError = `Could not read diagnostic: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}`;
-          }
-        }
-        return { url: worker.url(), lastNativeError };
-      }),
-    );
-    throw new Error(
-      `${error instanceof Error ? error.message : String(error)}\nNative host manifests: ${JSON.stringify(nativeHostPaths)}\nService workers: ${JSON.stringify(workerDiagnostics)}\nChromium logs: ${browserErrors}`,
-    );
-  }
-
   const verifier = spawnSync(process.execPath, [join(ROOT, "scripts/verify-local.mjs")], {
     cwd: ROOT,
-    env: { ...process.env, CHROME_MCP_URL: `http://127.0.0.1:${mcpPort}/mcp` },
+    env: { ...process.env, CHROME_MCP_URL: mcpUrl },
     encoding: "utf8",
   });
-  assert.equal(verifier.status, 0, `Local verifier failed:
-${verifier.stdout}
-${verifier.stderr}`);
+  assert.equal(verifier.status, 0, `Local verifier failed:\n${verifier.stdout}\n${verifier.stderr}`);
   assert.match(verifier.stdout, /Chrome Browser MCP is ready/);
   assert.match(verifier.stdout, new RegExp(EXTENSION_ID));
 
   client = new Client({ name: "chrome-e2e", version: "1.0.0" });
-  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${mcpPort}/mcp`)));
+  await client.connect(new StreamableHTTPClientTransport(new URL(mcpUrl)));
 
   const advertisedTools = await client.listTools();
   const advertisedToolNames = advertisedTools.tools.map((tool) => tool.name);
@@ -286,47 +162,27 @@ ${verifier.stderr}`);
   assert.equal(workerWindow.windowId, parentWindow.windowId, "Spawned worker must stay in the parent ChatGPT window");
   assert.notEqual(workerWindow.windowId, workWindow.windowId, "Focused non-ChatGPT window must not capture agent workers");
 
-  const cancelledPlacement = await client.callTool({
-    name: "cancel_agents",
-    arguments: { run_id: placementRunId },
-  });
+  const cancelledPlacement = await client.callTool({ name: "cancel_agents", arguments: { run_id: placementRunId } });
   assert.equal(cancelledPlacement.isError, undefined, JSON.stringify(cancelledPlacement));
   await browserCdp.send("Target.closeTarget", { targetId: workTarget.targetId });
   await parentChatGpt.close();
   await browserCdp.detach();
 
+  assert.ok(Number.isInteger(mcpPort));
   process.stdout.write("E2E PASS: MCP client -> native host -> Chrome extension -> live tabs\n");
 } catch (error) {
   testFailure = error;
 } finally {
   await client?.close();
-  await browser?.close();
-  if (browserProcess && browserProcess.exitCode === null) {
-    browserProcess.kill("SIGTERM");
-    await Promise.race([
-      new Promise((resolvePromise) => browserProcess.once("exit", resolvePromise)),
-      new Promise((resolvePromise) => setTimeout(resolvePromise, 3_000)),
-    ]);
-    if (browserProcess.exitCode === null) browserProcess.kill("SIGKILL");
-  }
-  if (process.platform !== "win32") {
-    spawnSync("pkill", ["-TERM", "-f", `--user-data-dir=${profileDir}`], { stdio: "ignore" });
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
-    spawnSync("pkill", ["-KILL", "-f", `--user-data-dir=${profileDir}`], { stdio: "ignore" });
-  }
+  await stack?.close();
   testServer.closeAllConnections();
   await new Promise((resolvePromise) => testServer.close(resolvePromise));
-  for (const nativeHostPath of nativeHostPaths) {
-    const previousNativeHostManifest = previousNativeHostManifests.get(nativeHostPath);
-    if (previousNativeHostManifest === undefined) await unlink(nativeHostPath).catch(() => undefined);
-    else await writeFile(nativeHostPath, previousNativeHostManifest);
-  }
   try {
     await rm(tempHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-  } catch (cleanupError) {
-    cleanupFailure = cleanupError;
+  } catch (error) {
+    cleanupFailure = error;
     if (testFailure) {
-      process.stderr.write(`Cleanup also failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}\n`);
+      process.stderr.write(`Cleanup also failed: ${error instanceof Error ? error.message : String(error)}\n`);
     }
   }
 }

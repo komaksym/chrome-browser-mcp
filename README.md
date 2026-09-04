@@ -2,7 +2,7 @@
 
 A local bridge that lets a private ChatGPT developer-mode app inspect and control the tabs already open in your desktop Google Chrome.
 
-Current patch version: **0.1.16**. Every patch must bump this version; CI rejects patches that do not.
+Current patch version: **0.1.17**. Every patch must bump this version; CI rejects patches that do not.
 
 The bridge exposes 18 MCP tools:
 
@@ -109,7 +109,7 @@ Then open `chrome://extensions` and click **Update**. Do not select the extensio
 
 `git pull` updates both `dist/extension` (what Chrome loads) and `dist/bridge` (what the native host executes). Clicking **Update** reloads the unpacked extension/native-messaging connection so the newly pulled runtime is used.
 
-The visible extension version must change on every patch. For this patch it must show **0.1.16**. If it still shows an older version, the pulled runtime was not applied.
+The visible extension version must change on every patch. For this patch it must show **0.1.17**. If it still shows an older version, the pulled runtime was not applied.
 
 ## 3. Verify the local browser chain
 
@@ -160,6 +160,8 @@ Keep `tunnel-client run` active whenever ChatGPT needs the browser tools.
 8. In a new chat, click **+ -> More**, select **Chrome Browser**, then ask: `List my open Chrome tabs.`
 
 See [`docs/CHATGPT_SETUP.md`](docs/CHATGPT_SETUP.md) for exact verification and troubleshooting.
+
+For the opt-in isolated headed-Chrome preflight used by the live ChatGPT smoke suite, see [`docs/LIVE_CHATGPT_SMOKE.md`](docs/LIVE_CHATGPT_SMOKE.md). It uses a dedicated persistent Chrome profile, port, and tunnel profile and does not submit a ChatGPT prompt.
 
 ## Security model
 
