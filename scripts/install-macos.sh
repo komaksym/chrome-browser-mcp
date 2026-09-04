@@ -78,15 +78,9 @@ Installed Chrome-safe native host wrappers using:
 Installed the launcher topology at:
   $APP_DIR/instances.json
 
-Now load these unpacked extensions in chrome://extensions (one per Chrome profile):
-  $ROOT/dist/extension
-  $ROOT/dist/extension2
-  $ROOT/dist/extension3
+Load one matching unpacked extension per Chrome profile using the mapping in:
+  $INSTANCES_JSON
 
-Use the extension IDs, ports, and profile mapping in scripts/instances.json.
-
-Then keep Chrome open and run:
-  npm run verify:local
-  npm run verify:local2
-  npm run verify:local3
+Then keep Chrome open and verify an instance with:
+  npm run verify:local -- <instance>
 EOF2
