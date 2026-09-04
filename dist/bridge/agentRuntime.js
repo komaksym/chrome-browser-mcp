@@ -193,10 +193,15 @@ export class AgentRuntime {
         }
         return undefined;
     }
-    /** Serializes one validated unsolicited snapshot through the same verification path as collection. */
+    /** Serializes validated worker lifecycle observations through the runtime state machine. */
     handleBrowserLifecycleEvent(event) {
-        if (event.type !== "chatgpt_worker_snapshot")
+        if (event.type === "ready") {
+            void this.enqueueSchedulerOperation(async () => {
+                await this.reconcileWorkerLeases();
+                await this.pumpScheduler(false);
+            });
             return;
+        }
         const owner = this.jobForWorkerTab(event.tabId);
         if (!owner)
             return;
@@ -204,6 +209,11 @@ export class AgentRuntime {
         void this.enqueueRunOperation(run, async () => {
             if (job.tabId !== event.tabId)
                 return;
+            if (event.type === "agent_worker_tab_removed") {
+                if (this.terminalizeWorkerTabClosed(run, job, event.tabId))
+                    await this.schedule();
+                return;
+            }
             const attempt = this.currentDispatchAttempt(run, job);
             if (!attempt || !this.acceptFreshSnapshot(job, event.snapshot))
                 return;
@@ -342,13 +352,128 @@ export class AgentRuntime {
         });
     }
     /** Runs the scheduler while holding its serialized operation slot. */
-    async pumpScheduler() {
+    async pumpScheduler(allowReconciliation = true) {
+        let reconciliationAttempted = false;
         while (true) {
             const attempts = this.reserveAvailableJobs();
-            if (attempts.length === 0)
+            if (attempts.length === 0) {
+                if (allowReconciliation &&
+                    !reconciliationAttempted &&
+                    this.activeWorkerCount() >= this.maxActiveWorkers &&
+                    this.hasDispatchEligibleJob()) {
+                    reconciliationAttempted = true;
+                    if (await this.reconcileWorkerLeases())
+                        continue;
+                }
                 return;
+            }
             await Promise.all(attempts.map((attempt) => this.dispatch(attempt)));
         }
+    }
+    /** Returns whether blocked global capacity has at least one job ready to dispatch. */
+    hasDispatchEligibleJob() {
+        return [...this.runs.values()].some((run) => {
+            if (run.cancellationRequested)
+                return false;
+            const runActiveCount = run.jobs.filter((job) => this.occupiesSlot(job)).length;
+            return runActiveCount < run.maxConcurrency && run.jobs.some((job) => this.isDispatchEligible(job));
+        });
+    }
+    /** Reconciles leased worker tabs against one current browser tab observation. */
+    async reconcileWorkerLeases() {
+        const leasedJobs = [...this.runs.values()].flatMap((run) => run.jobs.flatMap((job) => {
+            const attempt = this.currentDispatchAttempt(run, job);
+            return attempt && job.tabId !== undefined ? [attempt] : [];
+        }));
+        if (leasedJobs.length === 0)
+            return false;
+        const tabIds = await this.currentBrowserTabIds();
+        if (!tabIds)
+            return false;
+        let releasedCapacity = false;
+        for (const attempt of leasedJobs) {
+            if (!this.isDispatchAttemptActive(attempt))
+                continue;
+            const tabId = attempt.job.tabId;
+            if (tabId === undefined)
+                continue;
+            if (!tabIds.has(tabId)) {
+                releasedCapacity = this.terminalizeWorkerTabClosed(attempt.run, attempt.job, tabId) || releasedCapacity;
+                continue;
+            }
+            const cached = typeof this.browser.latestChatGptWorkerSnapshot === "function"
+                ? this.browser.latestChatGptWorkerSnapshot(tabId)
+                : undefined;
+            if (this.acceptFreshSnapshot(attempt.job, cached)) {
+                const outcome = this.acceptWorkerSnapshot(attempt, cached);
+                if (outcome === "accepted") {
+                    releasedCapacity = true;
+                    continue;
+                }
+            }
+            const snapshot = await this.readCurrentSnapshot(attempt, cached);
+            if (!snapshot)
+                continue;
+            const outcome = this.acceptWorkerSnapshot(attempt, snapshot);
+            if (outcome === "accepted")
+                releasedCapacity = true;
+        }
+        return releasedCapacity;
+    }
+    /** Reads current tab metadata without treating a malformed or failed observation as proof of absence. */
+    async currentBrowserTabIds() {
+        try {
+            const response = await this.browser.request("list_tabs");
+            if (!response || typeof response !== "object")
+                return undefined;
+            const tabs = response.tabs;
+            if (!Array.isArray(tabs))
+                return undefined;
+            const tabIds = new Set();
+            for (const tab of tabs) {
+                if (!tab || typeof tab !== "object")
+                    return undefined;
+                const tabId = tab.tabId;
+                if (typeof tabId !== "number" || !Number.isSafeInteger(tabId) || tabId <= 0)
+                    return undefined;
+                tabIds.add(tabId);
+            }
+            return tabIds;
+        }
+        catch {
+            return undefined;
+        }
+    }
+    /** Queries current worker state for reconciliation, bypassing an observation that may now be stale. */
+    async readCurrentSnapshot(attempt, cached) {
+        const { job } = attempt;
+        return this.requestFreshSnapshot(attempt, Math.max(job.snapshotBaselineRevision ?? 0, job.snapshotLastRevision ?? 0, cached?.revision ?? 0));
+    }
+    /** Applies the shared terminal transition for a missing current worker tab. */
+    terminalizeWorkerTabClosed(run, job, tabId) {
+        if (job.tabId !== tabId)
+            return false;
+        job.tabId = undefined;
+        if (typeof this.browser.forgetChatGptWorkerSnapshot === "function") {
+            this.browser.forgetChatGptWorkerSnapshot(tabId);
+        }
+        if (job.state === "VERIFIED_DONE" ||
+            job.state === "FAILED_TERMINAL" ||
+            job.state === "CANCELLED" ||
+            run.cancellationRequested) {
+            return false;
+        }
+        const attempt = this.currentDispatchAttempt(run, job);
+        if (!attempt)
+            return false;
+        job.retryRequested = false;
+        job.error = {
+            code: "WORKER_TAB_CLOSED",
+            message: "Agent Runtime worker tab was closed before completion",
+            retryable: false,
+        };
+        job.state = "FAILED_TERMINAL";
+        return this.releaseDispatchAttempt(attempt);
     }
     /** Reserves all currently available global and per-run worker slots before starting browser operations. */
     reserveAvailableJobs() {
@@ -591,10 +716,18 @@ export class AgentRuntime {
             : undefined;
         if (this.acceptFreshSnapshot(job, cached))
             return cached;
+        return this.requestFreshSnapshot(attempt, Math.max(job.snapshotBaselineRevision ?? 0, job.snapshotLastRevision ?? 0));
+    }
+    /** Requests and validates one newer worker snapshot after a caller-selected revision. */
+    async requestFreshSnapshot(attempt, afterRevision) {
+        const { job } = attempt;
+        const tabId = job.tabId;
+        if (tabId === undefined || !this.isDispatchAttemptActive(attempt))
+            return undefined;
         try {
             const response = await this.browser.request("read_chatgpt_worker_snapshot", {
                 tabId,
-                afterRevision: Math.max(job.snapshotBaselineRevision ?? 0, job.snapshotLastRevision ?? 0),
+                afterRevision,
             });
             if (!this.isDispatchAttemptActive(attempt))
                 return undefined;

@@ -75,6 +75,30 @@ describe("MCP HTTP server", () => {
     await client.close();
   });
 
+  it("defaults new tabs to the background while allowing explicit foreground focus", async () => {
+    const requests: Array<{ method: string; args: Record<string, unknown> }> = [];
+    const fakeBrowser = {
+      status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        requests.push({ method, args });
+        return Promise.resolve({ method, args });
+      },
+    } as BrowserClient;
+    const client = await connect(fakeBrowser);
+
+    await client.callTool({ name: "new_tab", arguments: { url: "https://example.com/background" } });
+    await client.callTool({
+      name: "new_tab",
+      arguments: { url: "https://example.com/foreground", active: true },
+    });
+
+    expect(requests).toEqual([
+      { method: "new_tab", args: { url: "https://example.com/background", active: false } },
+      { method: "new_tab", args: { url: "https://example.com/foreground", active: true } },
+    ]);
+    await client.close();
+  });
+
   it("accepts an omitted request_id and returns the generated request identity", async () => {
     let submissionCalls = 0;
     const fakeBrowser = {

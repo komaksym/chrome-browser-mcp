@@ -8,7 +8,9 @@ interface NativeResponse {
 }
 
 let nativeMessageListener: ((message: unknown) => void) | undefined;
+let nativeDisconnectListener: (() => void) | undefined;
 let workerSnapshotListener: ((message: unknown, sender: chrome.runtime.MessageSender) => void) | undefined;
+let tabRemovedListener: ((tabId: number) => void) | undefined;
 const nativeMessages: unknown[] = [];
 const tabs = new Map<number, chrome.tabs.Tab>();
 const executeScript = vi.fn();
@@ -22,7 +24,7 @@ const chromeApi = {
     connectNative: () => ({
       postMessage: (message: unknown) => nativeMessages.push(message),
       onMessage: { addListener: (listener: (message: unknown) => void) => { nativeMessageListener = listener; } },
-      onDisconnect: { addListener: vi.fn() },
+      onDisconnect: { addListener: (listener: () => void) => { nativeDisconnectListener = listener; } },
     }),
     onInstalled: { addListener: vi.fn() },
     onStartup: { addListener: vi.fn() },
@@ -41,7 +43,11 @@ const chromeApi = {
     create: vi.fn<() => Promise<chrome.tabs.Tab>>(() => Promise.resolve(undefined as unknown as chrome.tabs.Tab)),
     update: updateTab,
     remove: vi.fn(),
-    onRemoved: { addListener: vi.fn() },
+    onRemoved: {
+      addListener: (listener: (tabId: number) => void) => {
+        tabRemovedListener = listener;
+      },
+    },
   },
   windows: { update: updateWindow },
   scripting: { executeScript },
@@ -209,31 +215,84 @@ describe("extension background worker commands", () => {
     });
   });
 
-  it("opens new tabs in the background by default while allowing explicit foreground focus", async () => {
-    (chromeApi.tabs.create as unknown as { mockResolvedValue: (value: chrome.tabs.Tab) => void }).mockResolvedValue({
-      id: 89,
-      url: "https://example.com/",
+  it("opens tabs in the background by default but honors an explicit foreground request", async () => {
+    const backgroundTab = {
+      id: 88,
+      url: "https://example.com/background",
       incognito: false,
       active: false,
       pinned: false,
       discarded: false,
       windowId: 9,
-      index: 1,
-    } as chrome.tabs.Tab);
+      index: 0,
+    } as chrome.tabs.Tab;
+    const foregroundTab = { ...backgroundTab, id: 89, url: "https://example.com/foreground", active: true };
+    const createMock = chromeApi.tabs.create as unknown as {
+      mockResolvedValueOnce: (value: chrome.tabs.Tab) => unknown;
+    };
+    createMock.mockResolvedValueOnce(backgroundTab);
+    createMock.mockResolvedValueOnce(foregroundTab);
 
-    const backgroundResponse = await request("new_tab", { url: "https://example.com/" });
+    const backgroundResponse = await request("new_tab", { url: backgroundTab.url });
+    const foregroundResponse = await request("new_tab", { url: foregroundTab.url, active: true });
+
     expect(backgroundResponse.error).toBeUndefined();
-    expect(chromeApi.tabs.create).toHaveBeenLastCalledWith({
-      url: "https://example.com/",
+    expect(foregroundResponse.error).toBeUndefined();
+    expect(chromeApi.tabs.create).toHaveBeenNthCalledWith(1, {
+      url: backgroundTab.url,
       active: false,
     });
-
-    const foregroundResponse = await request("new_tab", { url: "https://example.com/", active: true });
-    expect(foregroundResponse.error).toBeUndefined();
-    expect(chromeApi.tabs.create).toHaveBeenLastCalledWith({
-      url: "https://example.com/",
+    expect(chromeApi.tabs.create).toHaveBeenNthCalledWith(2, {
+      url: foregroundTab.url,
       active: true,
     });
+  });
+
+  it("keeps the user's active tab and window unchanged when opening a background tab", async () => {
+    const activeTab = {
+      id: 41,
+      url: "https://example.com/current",
+      incognito: false,
+      active: true,
+      pinned: false,
+      discarded: false,
+      windowId: 7,
+      index: 0,
+    } as chrome.tabs.Tab;
+    const backgroundTab = {
+      ...activeTab,
+      id: 42,
+      url: "https://example.com/background",
+      active: false,
+      windowId: 8,
+      index: 1,
+    } as chrome.tabs.Tab;
+    tabs.set(activeTab.id!, activeTab);
+
+    let activeTabId = activeTab.id;
+    let focusedWindowId = activeTab.windowId;
+    const createMock = chromeApi.tabs.create as unknown as {
+      mockImplementation: (implementation: (properties: chrome.tabs.CreateProperties) => Promise<chrome.tabs.Tab>) => unknown;
+    };
+    createMock.mockImplementation((properties) => {
+      const created = { ...backgroundTab, active: properties.active !== false };
+      if (created.active) {
+        activeTab.active = false;
+        activeTabId = created.id;
+        focusedWindowId = created.windowId;
+      }
+      tabs.set(created.id!, created);
+      return Promise.resolve(created);
+    });
+
+    const response = await request("new_tab", { url: backgroundTab.url, windowId: backgroundTab.windowId });
+
+    expect(response.error).toBeUndefined();
+    expect(activeTabId).toBe(activeTab.id);
+    expect(focusedWindowId).toBe(activeTab.windowId);
+    expect(updateWindow).not.toHaveBeenCalled();
+    expect(tabs.get(activeTab.id!)).toMatchObject({ active: true, windowId: activeTab.windowId });
+    expect(tabs.get(backgroundTab.id!)).toMatchObject({ active: false, windowId: backgroundTab.windowId });
   });
 
   it("opens an agent worker in the stored parent window with the parent as opener", async () => {
@@ -264,6 +323,85 @@ describe("extension background worker commands", () => {
       windowId: 9,
       openerTabId: 47,
     });
+  });
+
+  it("emits one bounded lifecycle event only when a known Agent Runtime worker tab is removed", async () => {
+    const parent = {
+      id: 47,
+      url: "https://chatgpt.com/c/parent",
+      incognito: false,
+      active: false,
+      pinned: false,
+      discarded: false,
+      windowId: 9,
+      index: 0,
+    } as chrome.tabs.Tab;
+    const worker = {
+      ...parent,
+      id: 88,
+      url: "https://chatgpt.com/",
+      openerTabId: 47,
+    } as chrome.tabs.Tab;
+    tabs.set(47, parent);
+    (chromeApi.tabs.create as unknown as { mockResolvedValue: (value: chrome.tabs.Tab) => void }).mockResolvedValue(worker);
+
+    const opened = await request("open_agent_worker_tab", { anchorTabId: 47 });
+    expect(opened).toMatchObject({ result: { tab: { tabId: 88 } } });
+    nativeMessages.splice(0);
+
+    tabRemovedListener?.(12);
+    tabRemovedListener?.(88);
+    tabRemovedListener?.(88);
+
+    expect(nativeMessages).toEqual([
+      {
+        type: "event",
+        event: "agent_worker_tab_removed",
+        tabId: 88,
+      },
+    ]);
+  });
+
+  it("replays a worker-tab-removal event after the native bridge reconnects", async () => {
+    vi.useFakeTimers();
+    try {
+      const parent = {
+        id: 47,
+        url: "https://chatgpt.com/c/parent",
+        incognito: false,
+        active: false,
+        pinned: false,
+        discarded: false,
+        windowId: 9,
+        index: 0,
+      } as chrome.tabs.Tab;
+      const worker = {
+        ...parent,
+        id: 89,
+        url: "https://chatgpt.com/",
+        openerTabId: 47,
+      } as chrome.tabs.Tab;
+      tabs.set(47, parent);
+      (chromeApi.tabs.create as unknown as { mockResolvedValue: (value: chrome.tabs.Tab) => void }).mockResolvedValue(worker);
+
+      const opened = await request("open_agent_worker_tab", { anchorTabId: 47 });
+      expect(opened).toMatchObject({ result: { tab: { tabId: 89 } } });
+      nativeMessages.splice(0);
+
+      nativeDisconnectListener?.();
+      tabRemovedListener?.(89);
+
+      expect(nativeMessages).toEqual([]);
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(nativeMessages).toContainEqual({
+        type: "event",
+        event: "agent_worker_tab_removed",
+        tabId: 89,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("never promotes an in-flight or known worker tab to the next run anchor", async () => {

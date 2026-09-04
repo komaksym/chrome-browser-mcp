@@ -408,4 +408,54 @@ describe("BrowserClient", () => {
     expect(events).toHaveLength(2);
   });
 
+  it("publishes only validated runtime worker-tab removals and clears cached snapshot evidence", () => {
+    const fromExtension = new PassThrough();
+    const client = new BrowserClient(fromExtension, new PassThrough(), 2_000);
+    const events: unknown[] = [];
+    client.subscribeLifecycle((event) => events.push(event));
+
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "chatgpt_worker_snapshot",
+      tabId: 42,
+      snapshot: {
+        ready: true,
+        generating: true,
+        latestUserText: "worker prompt",
+        latestUserTruncated: false,
+        latestAssistantText: "working",
+        latestAssistantTruncated: false,
+        revision: 1,
+        timestamp: 1_700_000_000_001,
+      },
+    });
+    expect(client.latestChatGptWorkerSnapshot(42)).toBeDefined();
+    events.splice(0);
+
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "agent_worker_tab_removed",
+      tabId: 42,
+      ignoredUnboundedField: "x".repeat(100_000),
+    });
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "agent_worker_tab_removed",
+      tabId: -1,
+    });
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "agent_worker_tab_removed",
+      tabId: 4.5,
+    });
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "agent_worker_tab_removed",
+      tabId: "42",
+    });
+
+    expect(events).toEqual([{ type: "agent_worker_tab_removed", tabId: 42 }]);
+    expect(client.latestChatGptWorkerSnapshot(42)).toBeUndefined();
+  });
+
 });

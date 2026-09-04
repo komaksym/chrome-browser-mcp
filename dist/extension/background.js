@@ -329,6 +329,7 @@ var reconnectTimer = null;
 var reconnectDelay = 500;
 var workerSnapshots = /* @__PURE__ */ new Map();
 var knownAgentWorkerTabIds = /* @__PURE__ */ new Set();
+var pendingAgentWorkerTabRemovals = /* @__PURE__ */ new Set();
 var pendingWorkerCreationsByAnchorTabId = /* @__PURE__ */ new Map();
 var SENSITIVE_QUERY_KEY = /(?:access[_-]?token|token|auth|authorization|api[_-]?key|secret|session|code|sig|signature|jwt|credential|password)/i;
 function resolveTabUrl(tab) {
@@ -753,6 +754,10 @@ function connectNative() {
     for (const [tabId, snapshot] of workerSnapshots) {
       nativePort.postMessage({ type: "event", event: "chatgpt_worker_snapshot", tabId, snapshot });
     }
+    for (const tabId of pendingAgentWorkerTabRemovals) {
+      nativePort.postMessage({ type: "event", event: "agent_worker_tab_removed", tabId });
+      pendingAgentWorkerTabRemovals.delete(tabId);
+    }
     nativePort.onMessage.addListener((message) => {
       if (!message || typeof message !== "object" || !("type" in message) || message.type !== "request") return;
       const request = message;
@@ -784,7 +789,10 @@ function scheduleReconnect() {
   reconnectDelay = Math.min(reconnectDelay * 2, 3e4);
 }
 chrome.tabs.onRemoved.addListener((tabId) => {
-  knownAgentWorkerTabIds.delete(tabId);
+  workerSnapshots.delete(tabId);
+  if (!knownAgentWorkerTabIds.delete(tabId)) return;
+  if (!nativePort) pendingAgentWorkerTabRemovals.add(tabId);
+  else nativePort.postMessage({ type: "event", event: "agent_worker_tab_removed", tabId });
 });
 chrome.runtime.onInstalled.addListener(connectNative);
 chrome.runtime.onStartup.addListener(connectNative);
