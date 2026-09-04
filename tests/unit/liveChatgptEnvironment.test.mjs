@@ -91,7 +91,6 @@ describe("live ChatGPT smoke environment policy", () => {
     ]);
     expect(invocation.env).toEqual({
       CONTROL_PLANE_API_KEY: "test-runtime-key",
-      TUNNEL_CLIENT_PROFILE_DIR: "/tmp/profiles",
     });
   });
 
