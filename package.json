@@ -1,6 +1,6 @@
 {
   "name": "chrome-browser-mcp",
-  "version": "0.1.20",
+  "version": "0.1.23",
   "private": true,
   "type": "module",
   "description": "A local Chrome browser bridge for ChatGPT via MCP with user-directed read/write actions.",
@@ -18,6 +18,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "npm run build && xvfb-run -a node tests/e2e/chrome-native-mcp.e2e.mjs",
+    "test:e2e:live:preflight": "node tests/e2e/live-chatgpt-environment.e2e.mjs",
     "check": "npm run version:check && npm run typecheck && npm run lint && npm test && npm run artifacts:check && npm run audit && npm run test:e2e",
     "version:check": "node scripts/check-version-bump.mjs",
     "dev:bridge": "tsx src/bridge/index.ts",
@@ -26,7 +27,8 @@
     "uninstall:mac": "bash scripts/uninstall-macos.sh",
     "audit": "npm audit --audit-level=high",
     "verify:local": "node scripts/verify-local.mjs",
-    "configure:tunnel": "bash scripts/configure-tunnel.sh"
+    "configure:tunnel": "bash scripts/configure-tunnel.sh",
+    "configure:tunnel:live-smoke": "bash scripts/configure-live-smoke-tunnel.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
