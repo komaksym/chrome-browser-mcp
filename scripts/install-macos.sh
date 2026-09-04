@@ -21,6 +21,7 @@ HOST_MANIFEST="$HOST_DIR/com.komaksym.chrome_browser_mcp.json"
 APP_DIR="$HOME/Library/Application Support/Chrome Browser MCP"
 INSTALLED_WRAPPER="$APP_DIR/native-host-wrapper.sh"
 BRIDGE_ENTRY="$ROOT/dist/bridge/index.js"
+BRIDGE_ENTRY_B64="$(printf '%s' "$BRIDGE_ENTRY" | base64 | tr -d '\n')"
 mkdir -p "$HOST_DIR" "$APP_DIR"
 
 # Chrome launched from Finder does not inherit shell initialization, Homebrew,
@@ -30,6 +31,7 @@ printf -v NODE_BIN_QUOTED '%q' "$NODE_BIN"
 printf -v BRIDGE_ENTRY_QUOTED '%q' "$BRIDGE_ENTRY"
 cat > "$INSTALLED_WRAPPER" <<EOF
 #!/bin/bash
+# chrome-browser-mcp-bridge-base64: $BRIDGE_ENTRY_B64
 set -euo pipefail
 exec $NODE_BIN_QUOTED $BRIDGE_ENTRY_QUOTED "\$@"
 EOF
