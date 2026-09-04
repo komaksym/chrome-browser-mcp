@@ -19,7 +19,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          expected_parent='221e4f091f103c01b9fe5ab12ed22f4462bc0ffe'
+          expected_parent='b08fa3dcd44f5bc3f40a059c2a4c159ac12e5807'
           actual_parent="$(git rev-parse HEAD^)"
           if [[ "$actual_parent" != "$expected_parent" ]]; then
             echo "Unexpected helper parent: $actual_parent" >&2
