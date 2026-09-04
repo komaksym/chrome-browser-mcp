@@ -242,12 +242,9 @@ export async function startChromeMcpStack({
   const claimedMcpPort = await claimLoopbackPort(mcpPort);
   let claimedDebugPort = await claimLoopbackPort(debugPort);
   while (claimedDebugPort === claimedMcpPort) claimedDebugPort = await claimLoopbackPort(0);
-  const nativeHost = provisionNativeHost
-    ? await installNativeHostManifests({ root, homeDir, nativeHostDirs })
-    : await findExistingNativeHostManifest({ homeDir, nativeHostDirs });
-  const executable = resolveChromeExecutable({ chromePath, requireGoogleChrome });
-  await mkdir(profileDir, { recursive: true });
 
+  let nativeHost;
+  let executable;
   let browser;
   let browserProcess;
   let stderr = "";
@@ -256,11 +253,17 @@ export async function startChromeMcpStack({
     if (closed) return;
     closed = true;
     await browser?.close().catch(() => undefined);
-    await stopBrowserProcess(browserProcess, profileDir);
-    await nativeHost.restore();
+    if (browserProcess) await stopBrowserProcess(browserProcess, profileDir);
+    await nativeHost?.restore();
   };
 
   try {
+    nativeHost = provisionNativeHost
+      ? await installNativeHostManifests({ root, homeDir, nativeHostDirs })
+      : await findExistingNativeHostManifest({ homeDir, nativeHostDirs });
+    executable = resolveChromeExecutable({ chromePath, requireGoogleChrome });
+    await mkdir(profileDir, { recursive: true });
+
     const args = [
       "--no-first-run",
       "--no-default-browser-check",
