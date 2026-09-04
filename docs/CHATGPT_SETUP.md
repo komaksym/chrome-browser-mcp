@@ -12,8 +12,8 @@ Expected properties for this patch:
 
 - `connected: true`
 - extension ID `jlpddlfiallighiohmhhkemgbhofpnha`
-- extension version `0.1.24`
-- MCP version `0.1.24`
+- extension version matches `package.json`
+- MCP version matches the extension version
 - 18 tools discovered
 
 If the extension and MCP versions differ, the local runtime is stale on one side. If the port is closed, open Chrome and check that the unpacked extension is enabled.
