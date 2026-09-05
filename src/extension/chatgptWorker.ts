@@ -16,7 +16,7 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
   const maxUserCharacters = 110_000;
   const truncationNotice = "\n\n[Worker output truncated for safety]\n\n";
   const completionMarkerTailCharacters = 1_024;
-  const completionMarkerPattern = /<<<SUBAGENT_DONE:[^>\r\n]+>>>/g;
+  const completionMarkerPattern = /<<<SUBAGENT_DONE\s*:\s*([A-Za-z0-9_-]+(?:\s*-\s*[A-Za-z0-9_-]+)*)\s*>>>/g;
   const snapshotPublishDelayMilliseconds = 50;
   type Snapshot = {
     ready: boolean;
@@ -41,6 +41,29 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
   /** Reads all outermost message-content blocks in display order without duplicating nested markup. */
   const exactMessageText = (element: Element | undefined): string | null => {
     if (!element) return null;
+    const findCompletionMarker = (value: string | undefined): string | undefined => {
+      if (typeof value !== "string") return undefined;
+      const matches = Array.from(value.matchAll(completionMarkerPattern));
+      const payload = matches.at(-1)?.[1];
+      return payload ? `<<<SUBAGENT_DONE:${payload.replace(/\s+/g, "")}>>>` : undefined;
+    };
+    const markerFromFollowingSiblings = (node: Element): string | undefined => {
+      let current: Element | null = node;
+      for (let depth = 0; current && depth < 6; depth += 1) {
+        let sibling: ChildNode | null = current.nextSibling;
+        while (sibling) {
+          const siblingText =
+            sibling instanceof HTMLElement && typeof sibling.innerText === "string"
+              ? sibling.innerText
+              : sibling.textContent ?? "";
+          const marker = findCompletionMarker(siblingText);
+          if (marker) return marker;
+          sibling = sibling.nextSibling;
+        }
+        current = current.parentElement;
+      }
+      return undefined;
+    };
     const contentSelector = ".markdown, [data-message-content]";
     const candidates = [
       ...(element.matches(contentSelector) ? [element] : []),
@@ -55,8 +78,9 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
       })
       .join("\n\n");
     const renderedText = (element as HTMLElement).innerText;
-    const marker =
-      typeof renderedText === "string" ? renderedText.match(completionMarkerPattern)?.at(-1) : undefined;
+    const marker = element.matches(assistantMessageSelector)
+      ? findCompletionMarker(renderedText) ?? markerFromFollowingSiblings(element)
+      : undefined;
     if (marker && !text.includes(marker)) return text ? `${text}\n\n${marker}` : marker;
     return text;
   };

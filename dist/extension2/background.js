@@ -157,11 +157,31 @@ function runChatGptWorkerCommand(command) {
   const maxUserCharacters = 11e4;
   const truncationNotice = "\n\n[Worker output truncated for safety]\n\n";
   const completionMarkerTailCharacters = 1024;
-  const completionMarkerPattern = /<<<SUBAGENT_DONE:[^>\r\n]+>>>/g;
+  const completionMarkerPattern = /<<<SUBAGENT_DONE\s*:\s*([A-Za-z0-9_-]+(?:\s*-\s*[A-Za-z0-9_-]+)*)\s*>>>/g;
   const snapshotPublishDelayMilliseconds = 50;
   const observerHost = globalThis;
   const exactMessageText = (element) => {
     if (!element) return null;
+    const findCompletionMarker = (value) => {
+      if (typeof value !== "string") return void 0;
+      const matches = Array.from(value.matchAll(completionMarkerPattern));
+      const payload = matches.at(-1)?.[1];
+      return payload ? `<<<SUBAGENT_DONE:${payload.replace(/\s+/g, "")}>>>` : void 0;
+    };
+    const markerFromFollowingSiblings = (node) => {
+      let current = node;
+      for (let depth = 0; current && depth < 6; depth += 1) {
+        let sibling = current.nextSibling;
+        while (sibling) {
+          const siblingText = sibling instanceof HTMLElement && typeof sibling.innerText === "string" ? sibling.innerText : sibling.textContent ?? "";
+          const marker2 = findCompletionMarker(siblingText);
+          if (marker2) return marker2;
+          sibling = sibling.nextSibling;
+        }
+        current = current.parentElement;
+      }
+      return void 0;
+    };
     const contentSelector = ".markdown, [data-message-content]";
     const candidates = [
       ...element.matches(contentSelector) ? [element] : [],
@@ -174,7 +194,7 @@ function runChatGptWorkerCommand(command) {
       return typeof html.innerText === "string" ? html.innerText : block.textContent ?? "";
     }).join("\n\n");
     const renderedText = element.innerText;
-    const marker = typeof renderedText === "string" ? renderedText.match(completionMarkerPattern)?.at(-1) : void 0;
+    const marker = element.matches(assistantMessageSelector) ? findCompletionMarker(renderedText) ?? markerFromFollowingSiblings(element) : void 0;
     if (marker && !text.includes(marker)) return text ? `${text}
 
 ${marker}` : marker;

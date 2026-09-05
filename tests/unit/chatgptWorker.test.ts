@@ -134,6 +134,31 @@ describe("ChatGPT worker extension command", () => {
     });
   });
 
+  it("retains a completion marker rendered after the assistant message", () => {
+    const marker = "<<<SUBAGENT_DONE:sibling-outside>>>";
+    document.body.innerHTML = `
+      <div id="prompt-textarea" contenteditable="true"></div>
+      <div data-message-author-role="user"></div>
+      <div class="turn">
+        <div data-message-author-role="assistant"><div class="markdown"></div></div>
+        <div class="plain-text-marker"></div>
+      </div>
+    `;
+    const user = document.querySelector('[data-message-author-role="user"]')!;
+    const assistant = document.querySelector('[data-message-author-role="assistant"]')!;
+    const content = assistant.querySelector(".markdown")!;
+    const markerNode = document.querySelector(".plain-text-marker")!;
+    withInnerText(user, "worker task");
+    withInnerText(content, "useful response");
+    withInnerText(assistant, "useful response");
+    withInnerText(markerNode, "<<<SUBAGENT_DONE : sibling-outside >>>");
+
+    expect(runChatGptWorkerCommand({ action: "read" })).toMatchObject({
+      latestAssistantText: `useful response\n\n${marker}`,
+      latestAssistantTruncated: false,
+    });
+  });
+
   it("bounds worker output while retaining its final completion marker", () => {
     const marker = "<<<SUBAGENT_DONE:bounded>>>";
     document.body.innerHTML = `
