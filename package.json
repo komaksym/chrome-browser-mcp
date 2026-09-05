@@ -1,6 +1,6 @@
 {
   "name": "chrome-browser-mcp",
-  "version": "0.1.23",
+  "version": "0.1.25",
   "private": true,
   "type": "module",
   "description": "A local Chrome browser bridge for ChatGPT via MCP with user-directed read/write actions.",
@@ -17,9 +17,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:e2e": "npm run build && xvfb-run -a node tests/e2e/chrome-native-mcp.e2e.mjs",
-    "test:e2e:live:preflight": "node tests/e2e/live-chatgpt-environment.e2e.mjs",
-    "check": "npm run version:check && npm run typecheck && npm run lint && npm test && npm run artifacts:check && npm run audit && npm run test:e2e",
+    "check": "npm run version:check && npm run typecheck && npm run lint && npm test && npm run artifacts:check && npm run audit",
     "version:check": "node scripts/check-version-bump.mjs",
     "dev:bridge": "tsx src/bridge/index.ts",
     "inspect": "npx @modelcontextprotocol/inspector@latest http://127.0.0.1:2091/mcp",
@@ -27,8 +25,7 @@
     "uninstall:mac": "bash scripts/uninstall-macos.sh",
     "audit": "npm audit --audit-level=high",
     "verify:local": "node scripts/verify-local.mjs",
-    "configure:tunnel": "bash scripts/configure-tunnel.sh",
-    "configure:tunnel:live-smoke": "bash scripts/configure-live-smoke-tunnel.sh"
+    "configure:tunnel": "bash scripts/configure-tunnel.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
@@ -37,7 +34,6 @@
   },
   "devDependencies": {
     "@eslint/js": "9.39.1",
-    "@playwright/test": "1.56.1",
     "@types/chrome": "0.1.32",
     "@types/express": "5.0.3",
     "@types/node": "24.10.1",

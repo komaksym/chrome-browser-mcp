@@ -1,4 +1,5 @@
 import { type BrowserClient } from "./browserClient.js";
+import { type DiagnosticsLogger } from "./diagnosticsLogger.js";
 type AgentState = "CREATED" | "DISPATCHED" | "GENERATING" | "OBSERVATION_UNCERTAIN" | "VERIFIED_DONE" | "FAILED_TRANSIENT" | "FAILED_TERMINAL" | "CANCELLED";
 /** Describes one caller-provided task assigned to a browser-backed worker. */
 export interface AgentTaskInput {
@@ -70,6 +71,7 @@ interface SpawnResult {
 /** Configures the runtime-wide limit for simultaneously active browser workers. */
 export interface AgentRuntimeOptions {
     maxActiveWorkers?: number;
+    logger?: DiagnosticsLogger;
 }
 interface AgentError {
     code: string;
@@ -101,6 +103,7 @@ export declare class AgentRuntime {
     private readonly runs;
     private readonly spawnRequests;
     private readonly maxActiveWorkers;
+    private readonly diagnostics;
     private schedulerOperation;
     /** Creates a runtime that owns worker tabs through the supplied browser bridge. */
     constructor(browser: BrowserClient, options?: AgentRuntimeOptions);

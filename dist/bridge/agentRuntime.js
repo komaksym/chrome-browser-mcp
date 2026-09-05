@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { BrowserError } from "./browserClient.js";
+import { createDiagnosticsLogger } from "./diagnosticsLogger.js";
 const transientCodes = new Set([
     "CHATGPT_NOT_READY",
     "NAVIGATION_IN_PROGRESS",
@@ -101,6 +102,7 @@ export class AgentRuntime {
     runs = new Map();
     spawnRequests = new Map();
     maxActiveWorkers;
+    diagnostics;
     schedulerOperation = Promise.resolve();
     /** Creates a runtime that owns worker tabs through the supplied browser bridge. */
     constructor(browser, options = {}) {
@@ -110,6 +112,7 @@ export class AgentRuntime {
             throw new Error("INVALID_MAX_ACTIVE_WORKERS: active-worker ceiling must be a positive integer");
         }
         this.maxActiveWorkers = maxActiveWorkers;
+        this.diagnostics = options.logger ?? createDiagnosticsLogger({ component: "agent-runtime" });
         if (typeof this.browser.subscribeLifecycle === "function") {
             this.browser.subscribeLifecycle((event) => this.handleBrowserLifecycleEvent(event));
         }
@@ -131,6 +134,9 @@ export class AgentRuntime {
         const existing = this.spawnRequests.get(requestId);
         if (existing) {
             if (existing.fingerprint !== fingerprint) {
+                this.diagnostics.log("error", "agent.spawn.idempotency_conflict", {
+                    errorCode: IDEMPOTENCY_CONFLICT,
+                });
                 throw new Error(`${IDEMPOTENCY_CONFLICT}: request_id ${requestId} was reused with different arguments`);
             }
             return existing.operation;
@@ -177,6 +183,12 @@ export class AgentRuntime {
             cancellationRequested: false,
         };
         this.runs.set(runId, run);
+        this.diagnostics.log("info", "agent.run.created", {
+            runId,
+            jobCount: jobs.length,
+            maxConcurrency,
+            tabId: anchorTabId,
+        });
         await this.enqueueRunOperation(run, async () => this.schedule());
         return { request_id: requestId, run_id: runId, state: this.runState(run), jobs: jobs.map(publicJob) };
     }
@@ -250,6 +262,10 @@ export class AgentRuntime {
     async cancelAgents(runId) {
         const run = this.requireRun(runId);
         run.cancellationRequested = true;
+        this.diagnostics.log("info", "agent.run.cancellation_requested", {
+            runId,
+            jobCount: run.jobs.length,
+        });
         return this.enqueueRunOperation(run, async () => {
             await this.cancelAndSchedule(run);
             return { run_id: runId, cancelled: true, jobs: run.jobs.map(publicJob) };
@@ -473,6 +489,14 @@ export class AgentRuntime {
             retryable: false,
         };
         job.state = "FAILED_TERMINAL";
+        this.diagnostics.log("error", "agent.job.failed", {
+            runId: run.runId,
+            jobId: job.jobId,
+            state: job.state,
+            errorCode: job.error.code,
+            retryable: job.error.retryable,
+            tabId,
+        });
         return this.releaseDispatchAttempt(attempt);
     }
     /** Reserves all currently available global and per-run worker slots before starting browser operations. */
@@ -569,6 +593,11 @@ export class AgentRuntime {
                 if (!this.ownsWorkerLease(job, leaseId))
                     return;
                 job.tabId = tabId;
+                this.diagnostics.log("info", "agent.worker.tab.opened", {
+                    runId: run.runId,
+                    jobId: job.jobId,
+                    tabId,
+                });
             }
             if (!this.isDispatchAttemptActive(attempt))
                 return;
@@ -585,6 +614,12 @@ export class AgentRuntime {
             job.error = undefined;
             job.transientFailures = 0;
             job.state = "DISPATCHED";
+            this.diagnostics.log("info", "agent.job.dispatched", {
+                runId: run.runId,
+                jobId: job.jobId,
+                tabId,
+                state: job.state,
+            });
         }
         catch (error) {
             await this.failJob(attempt, error);
@@ -601,6 +636,15 @@ export class AgentRuntime {
             if (job.transientFailures < MAX_TRANSIENT_FAILURES) {
                 job.error = details;
                 job.state = "FAILED_TRANSIENT";
+                this.diagnostics.log("error", "agent.job.failed", {
+                    runId: attempt.run.runId,
+                    jobId: job.jobId,
+                    state: job.state,
+                    errorCode: details.code,
+                    retryable: details.retryable,
+                    transientFailures: job.transientFailures,
+                    ...(job.tabId === undefined ? {} : { tabId: job.tabId }),
+                });
                 if (job.tabId === undefined)
                     this.releaseDispatchAttempt(attempt);
                 return;
@@ -615,6 +659,15 @@ export class AgentRuntime {
             job.error = details;
         }
         job.state = "FAILED_TERMINAL";
+        this.diagnostics.log("error", "agent.job.failed", {
+            runId: attempt.run.runId,
+            jobId: job.jobId,
+            state: job.state,
+            errorCode: job.error.code,
+            retryable: job.error.retryable,
+            transientFailures: job.transientFailures,
+            ...(job.tabId === undefined ? {} : { tabId: job.tabId }),
+        });
         await this.closeWorkerTab(job);
         this.releaseDispatchAttempt(attempt);
     }
@@ -628,6 +681,11 @@ export class AgentRuntime {
         if (job.state !== "VERIFIED_DONE" && job.state !== "FAILED_TERMINAL") {
             job.state = "CANCELLED";
             job.error = undefined;
+            this.diagnostics.log("info", "agent.job.cancelled", {
+                runId: job.runId,
+                jobId: job.jobId,
+                state: job.state,
+            });
         }
         job.retryRequested = false;
         await this.closeWorkerTab(job);
@@ -639,11 +697,21 @@ export class AgentRuntime {
         const tabId = job.tabId;
         if (tabId === undefined)
             return;
+        this.diagnostics.log("debug", "agent.worker.tab.close_started", { jobId: job.jobId, tabId });
         try {
             await this.browser.request("close_tab", { tabId });
             job.tabId = undefined;
+            this.diagnostics.log("info", "agent.worker.tab.closed", { jobId: job.jobId, tabId, cleaned: true });
         }
-        catch {
+        catch (error) {
+            const details = errorDetails(error);
+            this.diagnostics.log("error", "agent.worker.tab.close_failed", {
+                runId: job.runId,
+                jobId: job.jobId,
+                tabId,
+                errorCode: details.code,
+                retryable: details.retryable,
+            });
             // A failed cleanup must not release the worker tab to generic MCP tools.
         }
         finally {
@@ -669,10 +737,24 @@ export class AgentRuntime {
                 if (!details.retryable)
                     throw error;
                 lastError = error;
+                this.diagnostics.log("debug", "agent.worker.submit.retry", {
+                    runId: attempt.run.runId,
+                    jobId: attempt.job.jobId,
+                    tabId,
+                    retry,
+                    errorCode: details.code,
+                });
                 try {
                     const state = await this.browser.request("read_chatgpt_worker", { tabId });
-                    if (workerIdentityMatches(attempt.job, state))
+                    if (workerIdentityMatches(attempt.job, state)) {
+                        this.diagnostics.log("info", "agent.worker.submit.ack_recovered", {
+                            runId: attempt.run.runId,
+                            jobId: attempt.job.jobId,
+                            tabId,
+                            retry,
+                        });
                         return;
+                    }
                 }
                 catch {
                     // The follow-up probe is diagnostic; retry policy is driven by the original error.
@@ -770,6 +852,15 @@ export class AgentRuntime {
             return "fallback";
         if (!worker.ready || worker.generating || !worker.latestAssistantText) {
             job.state = "GENERATING";
+            this.diagnostics.log("debug", "agent.job.state", {
+                runId: attempt.run.runId,
+                jobId: job.jobId,
+                tabId: job.tabId,
+                state: job.state,
+                ready: worker.ready,
+                generating: worker.generating,
+                hasAssistantText: Boolean(worker.latestAssistantText),
+            });
             return "pending";
         }
         if (this.acceptObservation(attempt, worker))
@@ -826,6 +917,13 @@ export class AgentRuntime {
         if (job.diagnostics.recovery_steps.length === 0)
             job.diagnostics.uncertainty_reason = undefined;
         job.state = "VERIFIED_DONE";
+        this.diagnostics.log("info", "agent.job.completed", {
+            runId: attempt.run.runId,
+            jobId: job.jobId,
+            tabId: job.tabId,
+            state: job.state,
+            hasResult: true,
+        });
         this.releaseDispatchAttempt(attempt);
         return true;
     }
@@ -863,6 +961,13 @@ export class AgentRuntime {
     /** Records one recovery-step failure without replacing the recovery contract's terminal error. */
     recordRecoveryFailure(job, step, error) {
         const details = errorDetails(error);
+        this.diagnostics.log("error", "agent.recovery.failed", {
+            runId: job.runId,
+            jobId: job.jobId,
+            recoveryStep: step,
+            errorCode: details.code,
+            retryable: details.retryable,
+        });
         const previousReason = job.diagnostics.uncertainty_reason ?? "worker result observation remained uncertain";
         job.diagnostics.uncertainty_reason =
             `${previousReason}; ${step} failed (${details.code}): ${details.message}`;
@@ -883,11 +988,18 @@ export class AgentRuntime {
     }
     /** Runs the bounded observation-only recovery ladder for a finished turn whose marker was not observed. */
     async recoverFinishedObservation(attempt, initial) {
-        const { job } = attempt;
+        const { run, job } = attempt;
         const tabId = job.tabId;
         if (tabId === undefined || !this.isDispatchAttemptActive(attempt))
             return;
         job.state = "OBSERVATION_UNCERTAIN";
+        this.diagnostics.log("info", "agent.job.state", {
+            runId: run.runId,
+            jobId: job.jobId,
+            tabId,
+            state: job.state,
+            reasonCode: "COMPLETION_MARKER_MISSING",
+        });
         job.diagnostics.uncertainty_reason = "completion marker missing after generation appeared finished";
         job.diagnostics.recovery_steps = ["current_state"];
         const currentAccepted = await this.recoveryAttempt(attempt, "current_state", () => this.acceptObservation(attempt, job.bestObservation ?? initial));
@@ -913,6 +1025,14 @@ export class AgentRuntime {
             retryable: false,
         };
         job.state = "FAILED_TERMINAL";
+        this.diagnostics.log("error", "agent.job.failed", {
+            runId: run.runId,
+            jobId: job.jobId,
+            tabId,
+            state: job.state,
+            errorCode: job.error.code,
+            retryable: job.error.retryable,
+        });
         await this.closeWorkerTab(job);
         this.releaseDispatchAttempt(attempt);
     }

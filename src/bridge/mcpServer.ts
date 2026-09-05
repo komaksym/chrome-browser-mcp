@@ -6,6 +6,7 @@ import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js
 import { z } from "zod";
 import type { BrowserClient } from "./browserClient.js";
 import { AgentRuntime } from "./agentRuntime.js";
+import { createDiagnosticsLogger, type DiagnosticsLogger } from "./diagnosticsLogger.js";
 
 const packageVersion = (JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
@@ -29,6 +30,35 @@ function errorResult(error: unknown) {
  isError: true,
  content: [{ type: "text" as const, text: message }],
  };
+}
+
+/** Extracts a stable error code for diagnostics without recording error details. */
+function diagnosticsErrorCode(error: unknown): string {
+ if (error instanceof Error && "code" in error && typeof error.code === "string") return error.code;
+ if (error instanceof Error) return error.name;
+ return "MCP_TOOL_ERROR";
+}
+
+/** Records one agent-tool request while keeping prompts and browser-derived content out of logs. */
+async function runAgentTool(
+ diagnostics: DiagnosticsLogger,
+ toolName: string,
+ operation: () => Promise<unknown>,
+) {
+ const startedAt = Date.now();
+ diagnostics.log("info", "mcp.tool.started", { toolName });
+ try {
+ const value = await operation();
+ diagnostics.log("info", "mcp.tool.completed", { toolName, durationMs: Date.now() - startedAt });
+ return asToolResult(value);
+ } catch (error) {
+ diagnostics.log("error", "mcp.tool.failed", {
+ toolName,
+ errorCode: diagnosticsErrorCode(error),
+ durationMs: Date.now() - startedAt,
+ });
+ return errorResult(error);
+ }
 }
 
 /** Rejects generic tools from receiving a browser tab owned by the agent runtime. */
@@ -70,7 +100,11 @@ function assertPublicActiveTab(value: unknown, agentRuntime: AgentRuntime): void
 }
 
 /** Builds the local MCP server while preserving the agent runtime's private tab ownership boundary. */
-export function createBrowserMcpServer(browser: BrowserClient, agentRuntime = new AgentRuntime(browser)): McpServer {
+export function createBrowserMcpServer(
+ browser: BrowserClient,
+ agentRuntime = new AgentRuntime(browser),
+ diagnostics: DiagnosticsLogger = createDiagnosticsLogger({ component: "mcp" }),
+): McpServer {
  const server = new McpServer(
  { name: "chrome-browser-mcp", version: packageVersion },
  {
@@ -87,7 +121,12 @@ export function createBrowserMcpServer(browser: BrowserClient, agentRuntime = ne
  inputSchema: {},
  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
  },
- () => asToolResult({ ...browser.status(), mcpVersion: packageVersion, writeEnabled: true }),
+ () => asToolResult({
+ ...browser.status(),
+ mcpVersion: packageVersion,
+ writeEnabled: true,
+ diagnostics: diagnostics.summary(),
+ }),
  );
 
  server.registerTool(
@@ -106,13 +145,8 @@ export function createBrowserMcpServer(browser: BrowserClient, agentRuntime = ne
  },
  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
  },
- async ({ request_id, tasks, max_concurrency }) => {
- try {
- return asToolResult(await agentRuntime.spawnAgents(tasks, max_concurrency, request_id));
- } catch (error) {
- return errorResult(error);
- }
- },
+ async ({ request_id, tasks, max_concurrency }) =>
+ runAgentTool(diagnostics, "spawn_agents", () => agentRuntime.spawnAgents(tasks, max_concurrency, request_id)),
  );
 
  server.registerTool(
@@ -441,13 +475,7 @@ export function createBrowserMcpServer(browser: BrowserClient, agentRuntime = ne
  inputSchema: { run_id: z.string().min(1).max(200) },
  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
  },
- async ({ run_id }) => {
- try {
- return asToolResult(await agentRuntime.collectAgents(run_id));
- } catch (error) {
- return errorResult(error);
- }
- },
+ async ({ run_id }) => runAgentTool(diagnostics, "collect_agents", () => agentRuntime.collectAgents(run_id)),
  );
 
  server.registerTool(
@@ -458,25 +486,23 @@ export function createBrowserMcpServer(browser: BrowserClient, agentRuntime = ne
  inputSchema: { run_id: z.string().min(1).max(200) },
  annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
  },
- async ({ run_id }) => {
- try {
- return asToolResult(await agentRuntime.cancelAgents(run_id));
- } catch (error) {
- return errorResult(error);
- }
- },
+ async ({ run_id }) => runAgentTool(diagnostics, "cancel_agents", () => agentRuntime.cancelAgents(run_id)),
  );
 
  return server;
 }
 
 /** Starts the loopback HTTP MCP server and shares one private worker runtime across requests. */
-export function startHttpMcpServer(browser: BrowserClient, port: number): Promise<HttpServer> {
- const agentRuntime = new AgentRuntime(browser);
+export function startHttpMcpServer(
+ browser: BrowserClient,
+ port: number,
+ diagnostics: DiagnosticsLogger = createDiagnosticsLogger({ component: "mcp" }),
+): Promise<HttpServer> {
+ const agentRuntime = new AgentRuntime(browser, { logger: diagnostics });
  const app = createMcpExpressApp({ host: "127.0.0.1" });
- app.get("/healthz", (_req, res) => res.json({ ok: true, browser: browser.status() }));
+ app.get("/healthz", (_req, res) => res.json({ ok: true, browser: browser.status(), diagnostics: diagnostics.summary() }));
  app.post("/mcp", async (req, res) => {
- const server = createBrowserMcpServer(browser, agentRuntime);
+ const server = createBrowserMcpServer(browser, agentRuntime, diagnostics);
  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
  let closed = false;
  /** Closes the per-request MCP server exactly once after its HTTP response ends. */
@@ -491,7 +517,7 @@ export function startHttpMcpServer(browser: BrowserClient, port: number): Promis
  await server.connect(transport);
  await transport.handleRequest(req, res, req.body);
  } catch (error) {
- process.stderr.write(`MCP request failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+ diagnostics.log("error", "mcp.http.request.failed", { errorCode: diagnosticsErrorCode(error) });
  if (!res.headersSent) {
  res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "Internal server error" }, id: null });
  }

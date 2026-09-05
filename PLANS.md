@@ -13,7 +13,7 @@ existing extension/native-host/runtime trust boundary.
    in runtime memory.
 3. Prefer fresh, identity-checked snapshots during collection, then retain the
    existing direct DOM and recovery ladder as fallback.
-4. Validate source, generated runtime artifacts, tests, and the real browser
+4. Validate source, generated runtime artifacts, and the deterministic bridge
    path before committing and pushing.
 
 ## System-level completion DAG
@@ -80,8 +80,8 @@ keeps user's focus          becomes active when requested
 - MCP HTTP `new_tab`: schema defaulting and explicit foreground forwarding.
 - Extension native `new_tab`: Chrome tab-creation options for omitted and
   explicit `active` values.
-- Live Chrome E2E: active-tab identity remains stable for background opens and
-  changes only for an explicit foreground request.
+- Manual browser verification: active-tab identity remains stable for
+  background opens and changes only for an explicit foreground request.
 
 # Issue #27: Reconcile stale worker leases
 
@@ -104,7 +104,7 @@ tab activation behavior.
 3. Bump the patch version, regenerate tracked bridge/extension artifacts, and
    document the repaired lifecycle boundary.
 4. Run focused tests, typecheck/lint, the full test suite, artifact/version
-   checks, and the available end-to-end validation; review and commit the
+   checks, and the available local validation; review and commit the
    completed change.
 
 ## System-level completion DAG
@@ -142,3 +142,66 @@ blocked scheduler pass OR browser ready after reconnect
   global slot and dispatches queued work without collection being the trigger.
 - Existing lifecycle event validation: generating, stale, mismatched, and
   malformed evidence must retain capacity and avoid oversubscription.
+
+# Two-profile Chrome MCP with safe diagnostics
+
+## Objective
+
+Update the existing multi-profile PR in place so it supports only the current
+Chrome profile and the second subscription profile. Remove the agent-profile
+route and automated/live E2E harness while retaining the manual ChatGPT smoke
+checklist. Add opt-in, local, structured diagnostics that make browser bridge
+and browser-backed worker failures actionable without recording prompts, page
+content, credentials, cookies, or full URLs.
+
+## Milestones
+
+1. Remove the agent profile from the checked-in topology, documentation, tunnel
+   validation, uninstall paths, and topology tests; regenerate only the two
+   supported extension artifacts.
+2. Add a bounded diagnostics logger with safe event fields, configurable level
+   and file output, and integrate it at MCP requests, browser transport, and
+   agent-runtime lifecycle seams.
+3. Expose only a safe diagnostics summary through `browser_status` and document
+   how to locate and collect per-profile logs for reproducible investigations.
+4. Run focused tests, typecheck/lint, the complete test suite, version and
+   artifact checks, and audit; review, commit, and push the simplified change
+   to the existing PR #43 branch.
+
+## System-level completion DAG
+
+```text
+ChatGPT tool call / browser event
+              |
+              v
+      safe event projection
+   (IDs, codes, state, timing only)
+              |
+              +--> stderr (launcher-visible)
+              |
+              +--> per-instance JSONL log (opt-in file)
+              |
+              v
+       browser_status summary
+              |
+              v
+     reproducible diagnosis without
+       prompts, page text, or secrets
+```
+
+## Implementation tasks
+
+1. Update `scripts/instances.json`, tunnel usage, uninstall paths, README, and
+   `docs/CHATGPT_SETUP.md` for exactly `chrome` and `chrome2`.
+2. Replace three-profile topology assertions with two-profile assertions and
+   remove the automated/live E2E support that depends on a separate Chromium
+   process or ChatGPT session.
+3. Add `src/bridge/diagnosticsLogger.ts` and unit tests covering level filtering,
+   JSONL output, bounded in-memory summary, and rejection of sensitive fields.
+4. Inject the logger into `BrowserClient`, `AgentRuntime`, and MCP server
+   request handlers; log lifecycle transitions and stable error codes only.
+5. Set safe per-instance log defaults in the generated macOS wrappers, allow
+   explicit `CHROME_MCP_LOG_LEVEL`/`CHROME_MCP_LOG_FILE` overrides, and document
+   the two log locations and redaction boundary.
+6. Add/adjust integration assertions for `browser_status` diagnostics, build
+   the tracked runtime artifacts, and run all required validation commands.

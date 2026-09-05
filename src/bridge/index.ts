@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { BrowserClient } from "./browserClient.js";
+import { createDiagnosticsLogger } from "./diagnosticsLogger.js";
 import { startHttpMcpServer } from "./mcpServer.js";
 
-const EXPECTED_ORIGIN = "chrome-extension://jlpddlfiallighiohmhhkemgbhofpnha/";
+const EXPECTED_ORIGIN =
+  process.env.CHROME_MCP_EXPECTED_ORIGIN ?? "chrome-extension://jlpddlfiallighiohmhhkemgbhofpnha/";
 const origin = process.argv[2];
 if (process.env.CHROME_MCP_SKIP_ORIGIN_CHECK !== "1" && origin !== EXPECTED_ORIGIN) {
   process.stderr.write(`Rejected native messaging origin: ${origin}\n`);
@@ -15,8 +17,10 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535) {
   process.exit(2);
 }
 
-const browser = new BrowserClient(process.stdin, process.stdout);
-const httpServer = await startHttpMcpServer(browser, port);
+const diagnostics = createDiagnosticsLogger({ component: process.env.CHROME_MCP_INSTANCE ?? "bridge" });
+const browser = new BrowserClient(process.stdin, process.stdout, 20_000, diagnostics);
+const httpServer = await startHttpMcpServer(browser, port, diagnostics);
+diagnostics.log("info", "bridge.listening", { port });
 process.stderr.write(`Chrome Browser MCP listening on http://127.0.0.1:${port}/mcp\n`);
 
 let shuttingDown = false;

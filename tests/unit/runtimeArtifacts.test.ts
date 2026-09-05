@@ -1,9 +1,15 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+const { instances } = JSON.parse(
+  readFileSync(new URL("../../scripts/instances.json", import.meta.url), "utf8"),
+) as { instances: Array<{ extensionDir: string }> };
 const runtimeArtifacts = [
-  "dist/extension/manifest.json",
-  "dist/extension/background.js",
+  ...instances.flatMap(({ extensionDir }) => [
+    `${extensionDir}/manifest.json`,
+    `${extensionDir}/background.js`,
+  ]),
   "dist/bridge/index.js",
 ];
 
