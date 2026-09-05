@@ -134,7 +134,7 @@ describe("ChatGPT worker extension command", () => {
     });
   });
 
-  it("retains a completion marker rendered after the assistant message", () => {
+  it("does not associate a marker rendered after the assistant message", () => {
     const marker = "<<<SUBAGENT_DONE:sibling-outside>>>";
     document.body.innerHTML = `
       <div id="prompt-textarea" contenteditable="true"></div>
@@ -151,10 +151,104 @@ describe("ChatGPT worker extension command", () => {
     withInnerText(user, "worker task");
     withInnerText(content, "useful response");
     withInnerText(assistant, "useful response");
-    withInnerText(markerNode, "<<<SUBAGENT_DONE : sibling-outside >>>");
+    withInnerText(markerNode, marker);
+
+    expect(runChatGptWorkerCommand({ action: "read" })).toMatchObject({
+      latestAssistantText: "useful response",
+      latestAssistantTruncated: false,
+    });
+  });
+
+  it("retains a completion marker from DOM text when rendered text omits it", () => {
+    const marker = "<<<SUBAGENT_DONE:dom-text>>>";
+    document.body.innerHTML = `
+      <div id="prompt-textarea" contenteditable="true"></div>
+      <div data-message-author-role="user"></div>
+      <div data-message-author-role="assistant">
+        <div class="markdown"></div>
+        <span class="protocol-marker"></span>
+      </div>
+    `;
+    const user = document.querySelector('[data-message-author-role="user"]')!;
+    const assistant = document.querySelector('[data-message-author-role="assistant"]')!;
+    const content = assistant.querySelector(".markdown")!;
+    const markerNode = assistant.querySelector(".protocol-marker")!;
+    withInnerText(user, "worker task");
+    withInnerText(content, "useful response");
+    withInnerText(assistant, "useful response");
+    markerNode.textContent = marker;
 
     expect(runChatGptWorkerCommand({ action: "read" })).toMatchObject({
       latestAssistantText: `useful response\n\n${marker}`,
+      latestAssistantTruncated: false,
+    });
+  });
+
+  it("uses complete DOM text when rendered text exposes the marker before it settles", () => {
+    const marker = "<<<SUBAGENT_DONE:stable-dom>>>";
+    document.body.innerHTML = `
+      <div id="prompt-textarea" contenteditable="true"></div>
+      <div data-message-author-role="user"></div>
+      <div class="protocol-portal"></div>
+      <div data-message-author-role="assistant"><div class="markdown"></div></div>
+    `;
+    const user = document.querySelector('[data-message-author-role="user"]')!;
+    const assistant = document.querySelector('[data-message-author-role="assistant"]')!;
+    const content = assistant.querySelector(".markdown")!;
+    document.querySelector(".protocol-portal")!.textContent = marker;
+    withInnerText(user, "worker task");
+    content.textContent = `Complete response\n${marker}`;
+    withInnerText(content, `Partial response\n${marker}`);
+    withInnerText(assistant, `Partial response\n${marker}`);
+
+    expect(runChatGptWorkerCommand({ action: "read" })).toMatchObject({
+      latestAssistantText: `Complete response\n${marker}`,
+      latestAssistantTruncated: false,
+    });
+  });
+
+  it("does not treat the dispatched prompt marker as a completed worker response", () => {
+    const marker = "<<<SUBAGENT_DONE:prompt-text>>>";
+    document.body.innerHTML = `
+      <div id="prompt-textarea" contenteditable="true"></div>
+      <div data-message-author-role="user"></div>
+      <div class="protocol-portal"></div>
+      <div data-message-author-role="assistant"><div class="markdown"></div></div>
+    `;
+    const user = document.querySelector('[data-message-author-role="user"]')!;
+    const assistant = document.querySelector('[data-message-author-role="assistant"]')!;
+    const content = assistant.querySelector(".markdown")!;
+    document.querySelector(".protocol-portal")!.textContent = marker;
+    withInnerText(user, `worker task\n${marker}`);
+    withInnerText(content, "useful response");
+    withInnerText(assistant, "useful response");
+
+    expect(runChatGptWorkerCommand({ action: "read" })).toMatchObject({
+      latestAssistantText: "useful response",
+      latestAssistantTruncated: false,
+    });
+  });
+
+  it("does not accept a duplicated prompt marker from a document-level response region", () => {
+    const marker = "<<<SUBAGENT_DONE:document-portal>>>";
+    document.body.innerHTML = `
+      <div id="prompt-textarea" contenteditable="true"></div>
+      <div data-message-author-role="user"></div>
+      <div data-message-author-role="assistant"><div class="markdown"></div></div>
+      <div class="protocol-portal"></div>
+    `;
+    const user = document.querySelector('[data-message-author-role="user"]')!;
+    const assistant = document.querySelector('[data-message-author-role="assistant"]')!;
+    const content = assistant.querySelector(".markdown")!;
+    const portal = document.querySelector(".protocol-portal")!;
+    user.textContent = `worker task\n${marker}`;
+    withInnerText(user, `worker task\n${marker}`);
+    withInnerText(content, "useful response");
+    withInnerText(assistant, "useful response");
+    portal.textContent = marker;
+
+    expect(runChatGptWorkerCommand({ action: "read" })).toMatchObject({
+      latestAssistantText: "useful response",
       latestAssistantTruncated: false,
     });
   });
@@ -216,7 +310,7 @@ describe("ChatGPT worker extension command", () => {
     });
   });
 
-  it("submits through the worker command without exposing selector choreography to the caller", () => {
+  it("submits through the worker command without exposing selector choreography to the caller", async () => {
     document.body.innerHTML = `
       <div id="prompt-textarea" contenteditable="true"></div>
       <button data-testid="send-button">Send</button>
@@ -228,7 +322,7 @@ describe("ChatGPT worker extension command", () => {
     composer.addEventListener("input", input);
     send.addEventListener("click", clicked);
 
-    expect(runChatGptWorkerCommand({ action: "submit", prompt: "worker task" })).toEqual({
+    expect(await runChatGptWorkerCommand({ action: "submit", prompt: "worker task" })).toEqual({
       submitted: true,
     });
     expect(composer.textContent).toBe("worker task");
@@ -236,7 +330,7 @@ describe("ChatGPT worker extension command", () => {
     expect(clicked).toHaveBeenCalledOnce();
   });
 
-  it("submits through ChatGPT's current composer control", () => {
+  it("submits through ChatGPT's current composer control", async () => {
     document.body.innerHTML = `
       <div id="prompt-textarea" contenteditable="true"></div>
       <button id="composer-submit-button">Send</button>
@@ -245,7 +339,66 @@ describe("ChatGPT worker extension command", () => {
     const clicked = vi.fn();
     send.addEventListener("click", clicked);
 
-    expect(runChatGptWorkerCommand({ action: "submit", prompt: "worker task" })).toEqual({
+    expect(await runChatGptWorkerCommand({ action: "submit", prompt: "worker task" })).toEqual({
+      submitted: true,
+    });
+    expect(clicked).toHaveBeenCalledOnce();
+  });
+
+  it("waits for the controlled composer state to commit before clicking", async () => {
+    vi.useFakeTimers();
+    try {
+      document.body.innerHTML = `
+        <div id="prompt-textarea" contenteditable="true"></div>
+        <button data-testid="send-button">Send</button>
+      `;
+      const send = document.querySelector<HTMLButtonElement>('[data-testid="send-button"]')!;
+      const clicked = vi.fn();
+      send.addEventListener("click", clicked);
+
+      const result = runChatGptWorkerCommand({ action: "submit", prompt: "worker task" });
+
+      expect(clicked).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(49);
+      expect(clicked).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(result).resolves.toEqual({ submitted: true });
+      expect(clicked).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses the page action input contract for a controlled contenteditable composer", async () => {
+    document.body.innerHTML = `
+      <div id="prompt-textarea" contenteditable="true">old text</div>
+      <button data-testid="send-button">Send</button>
+    `;
+    const composer = document.querySelector<HTMLElement>("#prompt-textarea")!;
+    const input = vi.fn();
+    const change = vi.fn();
+    composer.addEventListener("input", input);
+    composer.addEventListener("change", change);
+
+    expect(await runChatGptWorkerCommand({ action: "submit", prompt: "worker task" })).toMatchObject({
+      submitted: true,
+    });
+    expect(composer.textContent).toBe("worker task");
+    expect(input).toHaveBeenCalledOnce();
+    expect(change).toHaveBeenCalledOnce();
+  });
+
+  it("skips a disabled legacy composer control when the current send control is available", async () => {
+    document.body.innerHTML = `
+      <div id="prompt-textarea" contenteditable="true"></div>
+      <button data-testid="send-button" disabled>Legacy send</button>
+      <button id="composer-submit-button">Send</button>
+    `;
+    const send = document.querySelector<HTMLButtonElement>("#composer-submit-button")!;
+    const clicked = vi.fn();
+    send.addEventListener("click", clicked);
+
+    expect(await runChatGptWorkerCommand({ action: "submit", prompt: "worker task" })).toEqual({
       submitted: true,
     });
     expect(clicked).toHaveBeenCalledOnce();
@@ -267,7 +420,7 @@ describe("ChatGPT worker extension command", () => {
       withInnerText(document.querySelector('[data-message-author-role="assistant"] .markdown')!, "partial one");
     });
 
-    const result = runChatGptWorkerCommand({ action: "submit", prompt: "worker task", tabId: 701 });
+    const result = await runChatGptWorkerCommand({ action: "submit", prompt: "worker task", tabId: 701 });
     await waitForSnapshotFlush();
     const first = messages.filter((message) => message.tabId === 701).at(-1);
 

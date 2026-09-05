@@ -157,6 +157,7 @@ function runChatGptWorkerCommand(command) {
   const maxUserCharacters = 11e4;
   const truncationNotice = "\n\n[Worker output truncated for safety]\n\n";
   const completionMarkerTailCharacters = 1024;
+  const composerStateCommitDelayMilliseconds = 50;
   const completionMarkerPattern = /<<<SUBAGENT_DONE\s*:\s*([A-Za-z0-9_-]+(?:\s*-\s*[A-Za-z0-9_-]+)*)\s*>>>/g;
   const snapshotPublishDelayMilliseconds = 50;
   const observerHost = globalThis;
@@ -168,19 +169,12 @@ function runChatGptWorkerCommand(command) {
       const payload = matches.at(-1)?.[1];
       return payload ? `<<<SUBAGENT_DONE:${payload.replace(/\s+/g, "")}>>>` : void 0;
     };
-    const markerFromFollowingSiblings = (node) => {
-      let current = node;
-      for (let depth = 0; current && depth < 6; depth += 1) {
-        let sibling = current.nextSibling;
-        while (sibling) {
-          const siblingText = sibling instanceof HTMLElement && typeof sibling.innerText === "string" ? sibling.innerText : sibling.textContent ?? "";
-          const marker2 = findCompletionMarker(siblingText);
-          if (marker2) return marker2;
-          sibling = sibling.nextSibling;
-        }
-        current = current.parentElement;
-      }
-      return void 0;
+    const normalizeCompletionMarkers = (value) => value.replace(completionMarkerPattern, (match) => findCompletionMarker(match) ?? match);
+    const markerTextValues = (node) => {
+      const values = [];
+      if (node instanceof HTMLElement && typeof node.innerText === "string") values.push(node.innerText);
+      if (typeof node.textContent === "string" && node.textContent !== values[0]) values.push(node.textContent);
+      return values;
     };
     const contentSelector = ".markdown, [data-message-content]";
     const candidates = [
@@ -193,12 +187,18 @@ function runChatGptWorkerCommand(command) {
       const html = block;
       return typeof html.innerText === "string" ? html.innerText : block.textContent ?? "";
     }).join("\n\n");
-    const renderedText = element.innerText;
-    const marker = element.matches(assistantMessageSelector) ? findCompletionMarker(renderedText) ?? markerFromFollowingSiblings(element) : void 0;
-    if (marker && !text.includes(marker)) return text ? `${text}
+    const marker = element.matches(assistantMessageSelector) ? markerTextValues(element).map(findCompletionMarker).find((value) => Boolean(value)) : void 0;
+    const domText = textBlocks.map((node) => node.textContent ?? "").join("\n\n");
+    if (domText && marker && domText.includes(marker)) {
+      const normalizedDomText = normalizeCompletionMarkers(domText);
+      if (normalizedDomText !== text) return normalizedDomText;
+    }
+    if (marker && !text.includes(marker)) {
+      return text ? `${text}
 
 ${marker}` : marker;
-    return text;
+    }
+    return normalizeCompletionMarkers(text);
   };
   const boundedAssistantText = (text) => {
     if (text === null || text.length <= maxAssistantCharacters) return { text, truncated: false };
@@ -217,6 +217,16 @@ ${marker}` : marker;
     const composer2 = document.querySelector(composerSelector);
     const ready2 = composer2 instanceof HTMLElement && !("disabled" in composer2 && Boolean(composer2.disabled)) && !("readOnly" in composer2 && Boolean(composer2.readOnly));
     return { composer: composer2, ready: ready2 };
+  };
+  const activeSendButton = () => Array.from(document.querySelectorAll(sendSelector)).find((element) => {
+    if (!(element instanceof HTMLButtonElement) || element.disabled) return false;
+    const checkVisibility = element.checkVisibility;
+    return typeof checkVisibility !== "function" || checkVisibility.call(element);
+  });
+  const replaceContentEditable = (element, value) => {
+    element.focus();
+    element.textContent = value;
+    element.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
   };
   const latestRemovedMessage = (records, selector) => {
     const candidates = [];
@@ -328,18 +338,22 @@ ${marker}` : marker;
       if (descriptor?.set) descriptor.set.call(composer, command.prompt);
       else composer.value = command.prompt;
     } else if (composer.isContentEditable || composer.getAttribute("contenteditable") === "true") {
-      composer.textContent = command.prompt;
+      replaceContentEditable(composer, command.prompt);
     } else {
       throw new Error("CHATGPT_NOT_READY: composer is not editable");
     }
-    composer.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
     composer.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
-    const sendButton = document.querySelector(sendSelector);
-    if (!(sendButton instanceof HTMLButtonElement) || sendButton.disabled) {
-      throw new Error("CHATGPT_NOT_READY: send button is not ready");
-    }
-    sendButton.click();
-    return snapshot === void 0 ? { submitted: true } : { submitted: true, snapshot };
+    return new Promise((resolve, reject) => {
+      setTimeout(() => {
+        const sendButton = activeSendButton();
+        if (!sendButton) {
+          reject(new Error("CHATGPT_NOT_READY: send button is not ready"));
+          return;
+        }
+        sendButton.click();
+        resolve(snapshot === void 0 ? { submitted: true } : { submitted: true, snapshot });
+      }, composerStateCommitDelayMilliseconds);
+    });
   }
   const userMessages = Array.from(document.querySelectorAll(userMessageSelector));
   const assistantMessages = Array.from(document.querySelectorAll(assistantMessageSelector));
