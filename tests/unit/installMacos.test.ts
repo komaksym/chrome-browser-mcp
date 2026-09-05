@@ -10,6 +10,7 @@ const { instances } = JSON.parse(
   readFileSync(new URL("../../scripts/instances.json", import.meta.url), "utf8"),
 ) as {
   instances: Array<{
+    name: string;
     hostName: string;
     wrapper: string;
     extensionId: string;
@@ -84,6 +85,8 @@ describe("macOS native host installer", () => {
         expect(wrapperContent).not.toContain("/usr/bin/env node");
         expect(wrapperContent).toContain(`CHROME_MCP_PORT=\"${instance.port}\"`);
         expect(wrapperContent).toContain(`CHROME_MCP_EXPECTED_ORIGIN=\"${origin}\"`);
+        expect(wrapperContent).toContain(`CHROME_MCP_INSTANCE=\"${instance.name}\"`);
+        expect(wrapperContent).toContain(`$CHROME_MCP_LOG_DIR/${instance.name}.jsonl`);
         expect(wrapperContent).toContain(
           "# chrome-browser-mcp-bridge-base64: " + Buffer.from(join(repoRoot, "dist/bridge/index.js")).toString("base64"),
         );

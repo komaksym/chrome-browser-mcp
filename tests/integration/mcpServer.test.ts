@@ -1,10 +1,12 @@
 // Public-seam specification for the job-based sub-agent runtime.
 import type { AddressInfo } from "node:net";
+import { Writable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { startHttpMcpServer } from "../../src/bridge/mcpServer.js";
 import type { BrowserClient } from "../../src/bridge/browserClient.js";
+import { createDiagnosticsLogger } from "../../src/bridge/diagnosticsLogger.js";
 
 const servers: Array<{ close: (callback: () => void) => void }> = [];
 afterEach(async () => {
@@ -21,6 +23,21 @@ async function connect(fakeBrowser: BrowserClient) {
   return client;
 }
 
+/** Captures structured diagnostics emitted by an MCP integration test. */
+function captureDiagnostics() {
+  let output = "";
+  const stderr = new Writable({
+    write(chunk, _encoding, callback) {
+      output += String(chunk);
+      callback();
+    },
+  });
+  return {
+    logger: createDiagnosticsLogger({ level: "info", filePath: null, stderr }),
+    output: () => output,
+  };
+}
+
 /** Extracts the generated completion marker from the runtime's submitted worker prompt. */
 function completionMarker(prompt: string): string {
   const marker = prompt.match(/<<<SUBAGENT_DONE:[0-9a-f-]+>>>/i)?.[0];
@@ -29,6 +46,41 @@ function completionMarker(prompt: string): string {
 }
 
 describe("MCP HTTP server", () => {
+  it("reports bounded diagnostics status without recording tool arguments", async () => {
+    const diagnostics = captureDiagnostics();
+    const fakeBrowser = {
+      status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),
+      request: (method: string) => {
+        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 81 } });
+        if (method === "chatgpt_worker_submit") return Promise.resolve({ submitted: true });
+        return Promise.resolve({});
+      },
+    } as BrowserClient;
+    const httpServer = await startHttpMcpServer(fakeBrowser, 0, diagnostics.logger);
+    servers.push(httpServer);
+    const port = (httpServer.address() as AddressInfo).port;
+    const client = new Client({ name: "integration-test", version: "1.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+
+    const before = await client.callTool({ name: "browser_status", arguments: {} });
+    expect(before.structuredContent).toMatchObject({
+      diagnostics: { enabled: true, level: "info", file: null, eventCount: 0, writeErrors: 0 },
+    });
+
+    await client.callTool({
+      name: "spawn_agents",
+      arguments: {
+        request_id: "diagnostics-test",
+        tasks: [{ agent_id: "safe-id", prompt: "private prompt must not be logged" }],
+        max_concurrency: 1,
+      },
+    });
+    expect(diagnostics.output()).not.toContain("private prompt must not be logged");
+    expect(diagnostics.output()).toContain("agent.run.created");
+    await client.close();
+  });
+
   it("advertises job-based agent tools instead of tab-based child-agent tools", async () => {
     const fakeBrowser = {
       status: () => ({ connected: true, extensionVersion: "0.1.0", extensionId: "abc" }),

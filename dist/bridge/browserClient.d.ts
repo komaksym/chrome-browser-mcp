@@ -1,5 +1,6 @@
 import type { Readable, Writable } from "node:stream";
 import type { BrowserLifecycleEvent, BrowserMethod, ChatGptWorkerSnapshot } from "./types.js";
+import { type DiagnosticsLogger } from "./diagnosticsLogger.js";
 /** Represents a browser-bridge failure with a stable machine-readable code. */
 export declare class BrowserError extends Error {
     readonly code: string;
@@ -10,6 +11,7 @@ export declare class BrowserError extends Error {
 export declare class BrowserClient {
     private readonly output;
     private readonly timeoutMs;
+    private readonly diagnostics;
     private readonly pending;
     private readonly chatGptWorkerSnapshots;
     private readonly lifecycleListeners;
@@ -17,7 +19,7 @@ export declare class BrowserClient {
     private extensionVersion;
     private extensionId;
     /** Creates a client backed by the Native Messaging input and output streams. */
-    constructor(input: Readable, output: Writable, timeoutMs?: number);
+    constructor(input: Readable, output: Writable, timeoutMs?: number, diagnostics?: DiagnosticsLogger);
     /** Returns the extension connection state advertised by the latest ready message. */
     status(): {
         connected: boolean;

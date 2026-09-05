@@ -13,7 +13,7 @@ function writeExecutable(path, content) {
 }
 
 describe("configure-tunnel instance routing", () => {
-  it("derives the agent profile, port, and runtime key reference", () => {
+  it("derives the second profile, port, and runtime key reference", () => {
     const sandbox = mkdtempSync(join(tmpdir(), "chrome-browser-mcp-configure-"));
     const fakeBin = join(sandbox, "bin");
     const capture = join(sandbox, "tunnel-args.txt");
@@ -26,7 +26,7 @@ describe("configure-tunnel instance routing", () => {
     );
 
     try {
-      const result = spawnSync("bash", ["scripts/configure-tunnel.sh", tunnelId, "chrome3"], {
+      const result = spawnSync("bash", ["scripts/configure-tunnel.sh", tunnelId, "chrome2"], {
         cwd: repoRoot,
         env: {
           ...process.env,
@@ -38,11 +38,11 @@ describe("configure-tunnel instance routing", () => {
 
       expect(result.status, [result.stdout, result.stderr].join("\n")).toBe(0);
       const args = readFileSync(capture, "utf8");
-      expect(args).toContain(["--profile", "chrome-browser-mcp-3", ""].join("\n"));
-      expect(args).toContain(["--mcp-server-url", "http://127.0.0.1:2095/mcp", ""].join("\n"));
-      expect(args).toContain(["--control-plane-api-key-ref", "env:CONTROL_PLANE_API_KEY_AGENT", ""].join("\n"));
-      expect(result.stdout).toContain("chrome3");
-      expect(result.stdout).toContain("2095");
+      expect(args).toContain(["--profile", "chrome-browser-mcp-2", ""].join("\n"));
+      expect(args).toContain(["--mcp-server-url", "http://127.0.0.1:2093/mcp", ""].join("\n"));
+      expect(args).toContain(["--control-plane-api-key-ref", "env:CONTROL_PLANE_API_KEY_2", ""].join("\n"));
+      expect(result.stdout).toContain("chrome2");
+      expect(result.stdout).toContain("2093");
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }

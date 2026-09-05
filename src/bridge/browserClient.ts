@@ -8,6 +8,7 @@ import type {
   IncomingNativeMessage,
   NativeRequest,
 } from "./types.js";
+import { createDiagnosticsLogger, type DiagnosticsLogger } from "./diagnosticsLogger.js";
 
 const MAX_CHATGPT_WORKER_USER_CHARACTERS = 110_000;
 const MAX_CHATGPT_WORKER_ASSISTANT_CHARACTERS = 30_000;
@@ -35,6 +36,12 @@ function writeFailure(error: unknown): BrowserError {
   const detail = error instanceof Error ? error.message : String(error);
   const code = detail.startsWith("Native message exceeds") ? "BROWSER_PROTOCOL_ERROR" : "BROWSER_DISCONNECTED";
   return new BrowserError(code, detail);
+}
+
+/** Extracts a stable error code without recording implementation messages. */
+function diagnosticsErrorCode(error: Error): string {
+  const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+  return code ?? error.name;
 }
 
 /** Returns a snapshot only when an unsolicited native event has the bounded primitive fields the runtime accepts. */
@@ -127,6 +134,7 @@ export class BrowserClient {
     input: Readable,
     private readonly output: Writable,
     private readonly timeoutMs = 20_000,
+    private readonly diagnostics: DiagnosticsLogger = createDiagnosticsLogger({ component: "browser" }),
   ) {
     new NativeMessageReader(
       input,
@@ -163,22 +171,56 @@ export class BrowserClient {
   /** Sends one browser request and resolves it with the matching Native Messaging response. */
   async request<T>(method: BrowserMethod, params: Record<string, unknown> = {}): Promise<T> {
     if (!this.ready && method !== "browser_status") {
-      throw new BrowserError("BROWSER_DISCONNECTED", "Chrome extension is not connected");
+      const error = new BrowserError("BROWSER_DISCONNECTED", "Chrome extension is not connected");
+      this.diagnostics.log("error", "browser.request.failed", { method, errorCode: error.code });
+      throw error;
     }
     const id = randomUUID();
+    const startedAt = Date.now();
     const message: NativeRequest = { type: "request", id, method, params };
+    this.diagnostics.log("debug", "browser.request.started", { method });
     return new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        reject(new BrowserError("TIMEOUT", `Browser request timed out: ${method}`));
+        const error = new BrowserError("TIMEOUT", `Browser request timed out: ${method}`);
+        this.diagnostics.log("error", "browser.request.failed", {
+          method,
+          errorCode: error.code,
+          durationMs: Date.now() - startedAt,
+        });
+        reject(error);
       }, this.timeoutMs);
-      this.pending.set(id, { resolve: (value) => resolve(value as T), reject, timeout });
+      this.pending.set(id, {
+        resolve: (value) => {
+          this.diagnostics.log("debug", "browser.request.succeeded", {
+            method,
+            durationMs: Date.now() - startedAt,
+          });
+          resolve(value as T);
+        },
+        reject: (error) => {
+          clearTimeout(timeout);
+          this.diagnostics.log("error", "browser.request.failed", {
+            method,
+            errorCode: diagnosticsErrorCode(error),
+            durationMs: Date.now() - startedAt,
+          });
+          reject(error);
+        },
+        timeout,
+      });
       try {
         writeNativeMessage(this.output, message);
       } catch (error) {
         clearTimeout(timeout);
         this.pending.delete(id);
-        reject(writeFailure(error));
+        const failure = writeFailure(error);
+        this.diagnostics.log("error", "browser.request.failed", {
+          method,
+          errorCode: failure.code,
+          durationMs: Date.now() - startedAt,
+        });
+        reject(failure);
       }
     });
   }
@@ -192,6 +234,10 @@ export class BrowserClient {
       this.ready = true;
       this.extensionVersion = message.extensionVersion;
       this.extensionId = message.extensionId;
+      this.diagnostics.log("info", "browser.connection.ready", {
+        extensionVersion: message.extensionVersion,
+        extensionId: message.extensionId,
+      });
       this.emitLifecycle({
         type: "ready",
         extensionVersion: message.extensionVersion,
@@ -201,6 +247,20 @@ export class BrowserClient {
     }
     if (message.type === "event") {
       const event = this.validLifecycleEvent(message);
+      if (event?.type === "chatgpt_worker_snapshot") {
+        this.diagnostics.log("debug", "browser.lifecycle.event", {
+          eventName: event.type,
+          tabId: event.tabId,
+          revision: event.snapshot.revision,
+          ready: event.snapshot.ready,
+          generating: event.snapshot.generating,
+        });
+      } else if (event?.type === "agent_worker_tab_removed") {
+        this.diagnostics.log("info", "browser.lifecycle.event", {
+          eventName: event.type,
+          tabId: event.tabId,
+        });
+      }
       if (event) this.emitLifecycle(event);
       return;
     }
@@ -263,6 +323,8 @@ export class BrowserClient {
 
   /** Rejects all pending requests after the Native Messaging transport becomes unusable. */
   private failAll(error: BrowserError): void {
+    const wasConnected = this.ready;
+    const pendingCount = this.pending.size;
     this.ready = false;
     this.chatGptWorkerSnapshots.clear();
     for (const pending of this.pending.values()) {
@@ -270,5 +332,11 @@ export class BrowserClient {
       pending.reject(error);
     }
     this.pending.clear();
+    if (wasConnected || pendingCount > 0) {
+      this.diagnostics.log("error", "browser.connection.lost", {
+        errorCode: error.code,
+        pendingCount,
+      });
+    }
   }
 }

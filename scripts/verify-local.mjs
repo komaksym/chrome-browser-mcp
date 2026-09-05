@@ -32,6 +32,12 @@ try {
     console.log(`Extension ID: ${extensionId}`);
     console.log(`Extension version: ${extensionVersion ?? "unknown"}`);
     console.log(`MCP version: ${mcpVersion ?? "unknown (stale bridge)"}`);
+    const diagnostics = status.structuredContent.diagnostics;
+    if (diagnostics?.enabled) {
+      console.log(`Diagnostics: ${diagnostics.level} (${diagnostics.file ?? "launcher stderr only"})`);
+    } else {
+      console.log("Diagnostics: off");
+    }
     console.log(`Tools (${names.length}): ${names.join(", ")}`);
     if (extensionId !== instance.extensionId) {
       throw new Error(`Wrong instance: expected extension ${instance.extensionId}, got ${extensionId}`);

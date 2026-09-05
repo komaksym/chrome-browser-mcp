@@ -12,7 +12,7 @@ Expected properties for this patch:
 
 - `connected: true`
 - extension ID `jlpddlfiallighiohmhhkemgbhofpnha`
-- extension version matches `package.json`
+- extension version matches `package.json` (`0.1.25` for this patch)
 - MCP version matches the extension version
 - 18 tools discovered
 
@@ -40,10 +40,10 @@ tunnel-client run --profile chrome-browser-mcp
 
 Do not report the tunnel as working unless `doctor` succeeds and the running client's readiness page says ready.
 
-## B2. Additional Chrome profiles and ChatGPT accounts
+## B2. Second Chrome profile and ChatGPT account
 
-Each logical ChatGPT session needs its own Chrome bridge tunnel. Tunnels are
-org-scoped, so create a tunnel and runtime key in each account or workspace.
+Each logical ChatGPT session needs its own Chrome bridge tunnel. Create the
+second tunnel in the workspace where the second ChatGPT account can use it.
 The local instance name selects the matching Chrome port and tunnel profile;
 the script intentionally does not accept an arbitrary profile/URL pair:
 
@@ -60,23 +60,11 @@ If `chrome-browser-mcp-2` was configured previously, append `--force` to the
 configure command to replace its local tunnel mapping. This does not delete the
 previous remote tunnel.
 
-For the agent profile:
-
-```bash
-export CONTROL_PLANE_API_KEY_AGENT="sk-..."
-./scripts/configure-tunnel.sh tunnel_<agent-id> chrome3
-
-npm run verify:local -- chrome3
-tunnel-client doctor --profile chrome-browser-mcp-3 --explain
-tunnel-client run --profile chrome-browser-mcp-3
-```
-
-In Chrome, load only `dist/extension2` in the second profile and only
-`dist/extension3` in the agent profile. Confirm the discovered app reports IDs
-`doommfidfcljgehkppgiinjdjnafcmdc` and `cjfkelmiakmoanljhleaahajdichbemn`.
-Repeat section C in each ChatGPT account. If you use `mcps-launcher`, `mcps all`
-starts all three Chrome tunnels, the shared Skills server, its Skills tunnels,
-and Playwright together.
+In Chrome, load only `dist/extension2` in the second profile. Confirm the
+discovered app reports ID `doommfidfcljgehkppgiinjdjnafcmdc`. Repeat section C
+in the second ChatGPT account. If you use `mcps-launcher`, `mcps all` starts
+both Chrome tunnels, the shared Skills server, its Skills tunnels, and
+Playwright together.
 
 ## C. Create the developer-mode app
 
@@ -141,8 +129,8 @@ Pass criteria:
 - Chrome is closed, the extension is disabled, or the native-host manifest is missing.
 - Run `npm run install:mac` again.
 - Confirm the extension ID exactly matches the expected ID.
-- For the subscription or agent profile, run `npm run verify:local -- chrome2` or
-  `npm run verify:local -- chrome3` against its fixed port.
+- For the second profile, run `npm run verify:local -- chrome2` against its
+  fixed port.
 
 ### Extension updated but tools are still stale
 
@@ -159,15 +147,31 @@ Confirm this file exists:
 The `path` inside it must point to an executable wrapper under
 `~/Library/Application Support/Chrome Browser MCP/`. Moving the repository
 requires rerunning `npm run install:mac`. That command also refreshes
-`~/Library/Application Support/Chrome Browser MCP/instances.json`, which
-`mcps-launcher` uses as the single installed mapping for the three Chrome
-routes.
+  `~/Library/Application Support/Chrome Browser MCP/instances.json`, which
+  `mcps-launcher` uses as the single installed mapping for the two Chrome
+  routes.
 
 ### Agent worker does not submit
 
 - Confirm the new tab is signed into ChatGPT and has loaded the normal web composer.
 - Refresh the developer-mode app after updating the MCP server.
 - If ChatGPT changed its web markup, update the composer/send-button selectors in `src/extension/chatgptWorker.ts`.
+
+### Need to investigate a browser-backed worker failure
+
+The installed wrappers keep separate safe logs for the two routes:
+
+```text
+~/Library/Logs/Chrome Browser MCP/chrome.jsonl
+~/Library/Logs/Chrome Browser MCP/chrome2.jsonl
+```
+
+Start with the last 100 lines from the file that matches the failing ChatGPT
+profile. Look for `browser.request.failed`, `agent.job.failed`,
+`agent.recovery.failed`, or `agent.worker.tab.close_failed`. The log contains
+stable codes, states, timing, generated run/job IDs, and tab metadata, but not
+prompts, page text, full URLs, cookies, or tokens. Use
+`CHROME_MCP_LOG_LEVEL=debug` only when the normal `info` events are not enough.
 
 ### Tunnel is not visible in ChatGPT
 

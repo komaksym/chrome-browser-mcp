@@ -1,6 +1,7 @@
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { BrowserClient, type BrowserError } from "../../src/bridge/browserClient.js";
+import { createDiagnosticsLogger } from "../../src/bridge/diagnosticsLogger.js";
 import { NativeMessageReader, writeNativeMessage } from "../../src/bridge/nativeMessaging.js";
 
 describe("BrowserClient", () => {
@@ -36,6 +37,24 @@ describe("BrowserClient", () => {
   it("refuses browser calls before the extension is ready", async () => {
     const client = new BrowserClient(new PassThrough(), new PassThrough(), 50);
     await expect(client.request("list_tabs")).rejects.toThrow("not connected");
+  });
+
+  it("logs a stable code for a browser call that starts before the extension is ready", async () => {
+    let output = "";
+    const stderr = new Writable({
+      write(chunk, _encoding, callback) {
+        output += String(chunk);
+        callback();
+      },
+    });
+    const logger = createDiagnosticsLogger({ level: "error", filePath: null, stderr });
+    const client = new BrowserClient(new PassThrough(), new PassThrough(), 50, logger);
+
+    await expect(client.request("list_tabs")).rejects.toThrow("not connected");
+
+    expect(output).toContain('"event":"browser.request.failed"');
+    expect(output).toContain('"errorCode":"BROWSER_DISCONNECTED"');
+    expect(output).not.toContain("Chrome extension is not connected");
   });
 
   it("caches a valid ChatGPT worker snapshot event for internal consumers", () => {

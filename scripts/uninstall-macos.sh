@@ -6,12 +6,10 @@ APP_DIR="$HOME/Library/Application Support/Chrome Browser MCP"
 readonly -a HOST_MANIFESTS=(
   "$HOST_DIR/com.komaksym.chrome_browser_mcp.json"
   "$HOST_DIR/com.komaksym.chrome_browser_mcp_2.json"
-  "$HOST_DIR/com.komaksym.chrome_browser_mcp_3.json"
 )
 readonly -a INSTALLED_FILES=(
   "$APP_DIR/native-host-wrapper.sh"
   "$APP_DIR/native-host-wrapper-2.sh"
-  "$APP_DIR/native-host-wrapper-3.sh"
   "$APP_DIR/instances.json"
 )
 

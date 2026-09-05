@@ -24,10 +24,10 @@ function extensionIdForKey(key: string): string {
 }
 
 describe("Chrome instance topology", () => {
-  it("declares three isolated instances", () => {
-    expect(instances).toHaveLength(3);
+  it("declares two isolated instances", () => {
+    expect(instances).toHaveLength(2);
     for (const field of ["name", "port", "hostName", "extensionId", "key", "extensionDir", "wrapper", "tunnelProfile", "runtimeKeyEnv"] as const) {
-      expect(new Set(instances.map((instance) => instance[field])).size).toBe(3);
+      expect(new Set(instances.map((instance) => instance[field])).size).toBe(2);
     }
   });
 
@@ -45,14 +45,14 @@ describe("Chrome instance topology", () => {
     expect(primary?.runtimeKeyEnv).toBe("CONTROL_PLANE_API_KEY");
   });
 
-  it("keeps the agent instance on the reserved port and identity", () => {
-    const agent = instances.find((instance) => instance.name === "chrome3");
-    expect(agent).toMatchObject({
-      port: 2095,
-      hostName: "com.komaksym.chrome_browser_mcp_3",
-      extensionId: "cjfkelmiakmoanljhleaahajdichbemn",
-      tunnelProfile: "chrome-browser-mcp-3",
-      runtimeKeyEnv: "CONTROL_PLANE_API_KEY_AGENT",
+  it("keeps the second profile on its isolated port and identity", () => {
+    const second = instances.find((instance) => instance.name === "chrome2");
+    expect(second).toMatchObject({
+      port: 2093,
+      hostName: "com.komaksym.chrome_browser_mcp_2",
+      extensionId: "doommfidfcljgehkppgiinjdjnafcmdc",
+      tunnelProfile: "chrome-browser-mcp-2",
+      runtimeKeyEnv: "CONTROL_PLANE_API_KEY_2",
     });
   });
 });

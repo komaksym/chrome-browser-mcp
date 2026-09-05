@@ -47,6 +47,12 @@ for (const instance of instances) {
     "set -euo pipefail",
     "export CHROME_MCP_PORT=\"" + instance.port + "\"",
     "export CHROME_MCP_EXPECTED_ORIGIN=\"" + origin + "\"",
+    "export CHROME_MCP_INSTANCE=\"" + instance.name + "\"",
+    "export CHROME_MCP_LOG_LEVEL=\"${CHROME_MCP_LOG_LEVEL:-info}\"",
+    "if [[ -z \"${CHROME_MCP_LOG_FILE:-}\" ]]; then",
+    "  CHROME_MCP_LOG_DIR=\"${CHROME_MCP_LOG_DIR:-$HOME/Library/Logs/Chrome Browser MCP}\"",
+    "  export CHROME_MCP_LOG_FILE=\"$CHROME_MCP_LOG_DIR/" + instance.name + ".jsonl\"",
+    "fi",
     "exec " + shellQuote(nodeBin) + " " + shellQuote(bridgeEntry) + " \"$@\"",
     "",
   ].join("\n");

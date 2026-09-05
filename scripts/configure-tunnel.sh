@@ -14,13 +14,13 @@ for ARG in "$@"; do
   fi
 done
 if (( ${#POSITIONAL[@]} > 2 )); then
-  echo "Usage: $0 tunnel_<32 lowercase hex characters> [chrome|chrome2|chrome3] [--force]" >&2
+  echo "Usage: $0 tunnel_<32 lowercase hex characters> [chrome|chrome2] [--force]" >&2
   exit 2
 fi
 if (( ${#POSITIONAL[@]} >= 1 )); then TUNNEL_ID="${POSITIONAL[0]}"; fi
 if (( ${#POSITIONAL[@]} >= 2 )); then INSTANCE="${POSITIONAL[1]}"; fi
 if [[ ! "$TUNNEL_ID" =~ ^tunnel_[0-9a-f]{32}$ ]]; then
-  echo "Usage: $0 tunnel_<32 lowercase hex characters> [chrome|chrome2|chrome3] [--force]" >&2
+  echo "Usage: $0 tunnel_<32 lowercase hex characters> [chrome|chrome2] [--force]" >&2
   exit 2
 fi
 if ! command -v node >/dev/null 2>&1; then
