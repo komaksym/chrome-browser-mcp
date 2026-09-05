@@ -68,6 +68,7 @@ function isChatGptWorkerSnapshot(value: unknown): value is ChatGptWorkerSnapshot
     (snapshot.latestAssistantText === null ||
       (typeof snapshot.latestAssistantText === "string" && snapshot.latestAssistantText.length <= 30_000)) &&
     typeof snapshot.latestAssistantTruncated === "boolean" &&
+    (snapshot.rateLimited === undefined || typeof snapshot.rateLimited === "boolean") &&
     typeof snapshot.revision === "number" &&
     Number.isSafeInteger(snapshot.revision) &&
     snapshot.revision > 0 &&

@@ -632,16 +632,17 @@ describe("AgentRuntime", () => {
  });
  }, 15_000);
 
- it("reports ChatGPT request throttling instead of marker recovery exhaustion", async () => {
+ it("reports ChatGPT request throttling from structured worker UI state", async () => {
  const { browser, state } = createRecoveryBrowser({
- read: (current) => Promise.resolve({
- ready: true,
- generating: false,
- latestUserText: current.submittedPrompt,
- latestAssistantText: "Too many requests. You’re making requests too quickly.",
- latestAssistantTruncated: false,
- tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
- }),
+  read: (current) => Promise.resolve({
+   ready: true,
+   generating: false,
+   latestUserText: current.submittedPrompt,
+   latestAssistantText: "Too many requests. You’re making requests too quickly.",
+   latestAssistantTruncated: false,
+   rateLimited: true,
+   tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
+  }),
  });
  const runtime = new AgentRuntime(browser);
  const spawned = await runtime.spawnAgents([{ agent_id: "rate-limited", prompt: "answer once" }], 1);
@@ -660,6 +661,27 @@ describe("AgentRuntime", () => {
  retryable: false,
  },
  }],
+ });
+ });
+
+ it("does not classify rate-limit prose as a worker availability failure", async () => {
+ const { browser } = createRecoveryBrowser({
+  read: (current) => Promise.resolve({
+   ready: true,
+   generating: false,
+   latestUserText: current.submittedPrompt,
+   latestAssistantText: `The report discusses “too many requests” as a general concern.\n${completionMarker(current.submittedPrompt)}`,
+   latestAssistantTruncated: false,
+   tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
+  }),
+ });
+ const runtime = new AgentRuntime(browser);
+ const spawned = await runtime.spawnAgents([{ agent_id: "prose-rate-limit", prompt: "answer once" }], 1);
+
+ await expect(runtime.collectAgents(spawned.run_id)).resolves.toMatchObject({
+  state: "COMPLETE",
+  failed: [],
+  results: [{ agent_id: "prose-rate-limit", result: { text: "The report discusses “too many requests” as a general concern." } }],
  });
  });
 
@@ -1054,6 +1076,7 @@ describe("AgentRuntime", () => {
             latestUserTruncated: false,
             latestAssistantText: "Too many requests. You’re making requests too quickly.",
             latestAssistantTruncated: false,
+            rateLimited: true,
             revision: 2,
             timestamp: Date.now() + 10,
           };

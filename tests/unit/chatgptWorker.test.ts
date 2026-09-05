@@ -17,6 +17,7 @@ type SnapshotMessage = {
     latestUserTruncated: boolean;
     latestAssistantText: string | null;
     latestAssistantTruncated: boolean;
+    rateLimited?: boolean;
     revision: number;
     timestamp: number;
   };
@@ -71,7 +72,42 @@ describe("ChatGPT worker extension command", () => {
       latestUserTruncated: false,
       latestAssistantText: "first line\n\nsecond line\n<<<SUBAGENT_DONE:abc>>>",
       latestAssistantTruncated: false,
+      rateLimited: false,
     });
+  });
+
+  it("reports a visible rate-limit modal as structured worker UI state", () => {
+    document.body.innerHTML = `
+      <div id="prompt-textarea" contenteditable="true"></div>
+      <div data-message-author-role="user"></div>
+      <div data-message-author-role="assistant"></div>
+      <div role="dialog" aria-modal="true">
+        <p>You’re making requests too quickly.</p>
+      </div>
+    `;
+    const user = document.querySelector('[data-message-author-role="user"]')!;
+    const assistant = document.querySelector('[data-message-author-role="assistant"]')!;
+    withInnerText(user, "worker task");
+    withInnerText(assistant, "A report that mentions too many requests is still data.");
+
+    expect(runChatGptWorkerCommand({ action: "read" })).toMatchObject({
+      latestAssistantText: "A report that mentions too many requests is still data.",
+      rateLimited: true,
+    });
+  });
+
+  it("does not infer rate limiting from assistant response prose", () => {
+    document.body.innerHTML = `
+      <div id="prompt-textarea" contenteditable="true"></div>
+      <div data-message-author-role="user"></div>
+      <div data-message-author-role="assistant"></div>
+    `;
+    const user = document.querySelector('[data-message-author-role="user"]')!;
+    const assistant = document.querySelector('[data-message-author-role="assistant"]')!;
+    withInnerText(user, "worker task");
+    withInnerText(assistant, "A report that mentions too many requests is still data.");
+
+    expect(runChatGptWorkerCommand({ action: "read" })).toMatchObject({ rateLimited: false });
   });
 
   it("bounds an oversized latest user message before native-message serialization", () => {
@@ -203,6 +239,33 @@ describe("ChatGPT worker extension command", () => {
 
     expect(runChatGptWorkerCommand({ action: "read" })).toMatchObject({
       latestAssistantText: `Complete response\n${marker}`,
+      latestAssistantTruncated: false,
+    });
+  });
+
+  it("uses DOM text only for the response block carrying the settled marker", () => {
+    const marker = "<<<SUBAGENT_DONE:scoped-dom>>>";
+    document.body.innerHTML = `
+      <div id="prompt-textarea" contenteditable="true"></div>
+      <div data-message-author-role="user"></div>
+      <div data-message-author-role="assistant">
+        <div class="markdown" id="response-block"></div>
+        <div class="markdown" id="secondary-block"></div>
+      </div>
+    `;
+    const user = document.querySelector('[data-message-author-role="user"]')!;
+    const assistant = document.querySelector('[data-message-author-role="assistant"]')!;
+    const responseBlock = document.querySelector("#response-block")!;
+    const secondaryBlock = document.querySelector("#secondary-block")!;
+    withInnerText(user, "worker task");
+    responseBlock.textContent = `Complete response\n${marker}`;
+    withInnerText(responseBlock, `Partial response\n${marker}`);
+    secondaryBlock.textContent = "Hidden control label";
+    withInnerText(secondaryBlock, "Rendered secondary response");
+    withInnerText(assistant, `Partial response\n${marker}\nRendered secondary response`);
+
+    expect(runChatGptWorkerCommand({ action: "read" })).toMatchObject({
+      latestAssistantText: `Complete response\n${marker}\n\nRendered secondary response`,
       latestAssistantTruncated: false,
     });
   });

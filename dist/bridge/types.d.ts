@@ -26,6 +26,8 @@ export interface ChatGptWorkerSnapshot {
     latestUserTruncated: boolean;
     latestAssistantText: string | null;
     latestAssistantTruncated: boolean;
+    /** Optional for compatibility with an older unpacked extension; current workers always send it. */
+    rateLimited?: boolean;
     revision: number;
     timestamp: number;
 }

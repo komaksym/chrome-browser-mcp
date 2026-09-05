@@ -159,8 +159,31 @@ function runChatGptWorkerCommand(command) {
   const completionMarkerTailCharacters = 1024;
   const composerStateCommitDelayMilliseconds = 50;
   const completionMarkerPattern = /<<<SUBAGENT_DONE\s*:\s*([A-Za-z0-9_-]+(?:\s*-\s*[A-Za-z0-9_-]+)*)\s*>>>/g;
+  const rateLimitDialogSelector = '[role="dialog"], [aria-modal="true"]';
+  const rateLimitTestIdSelector = '[data-testid*="rate-limit"], [data-testid*="rate_limit"]';
+  const rateLimitPhrases = [
+    "too many requests",
+    "making requests too quickly",
+    "temporarily limited access to your conversations"
+  ];
   const snapshotPublishDelayMilliseconds = 50;
   const observerHost = globalThis;
+  const isVisibleElement = (node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    const checkVisibility = node.checkVisibility;
+    if (typeof checkVisibility === "function") return checkVisibility.call(node);
+    if (node.hidden || node.getAttribute("aria-hidden") === "true") return false;
+    const style = typeof getComputedStyle === "function" ? getComputedStyle(node) : void 0;
+    return style?.display !== "none" && style?.visibility !== "hidden";
+  };
+  const rateLimitModalVisible = () => {
+    if (Array.from(document.querySelectorAll(rateLimitTestIdSelector)).some(isVisibleElement)) return true;
+    return Array.from(document.querySelectorAll(rateLimitDialogSelector)).some((node) => {
+      if (!isVisibleElement(node)) return false;
+      const text = node.textContent?.toLowerCase() ?? "";
+      return rateLimitPhrases.some((phrase) => text.includes(phrase));
+    });
+  };
   const exactMessageText = (element) => {
     if (!element) return null;
     const findCompletionMarker = (value) => {
@@ -183,15 +206,18 @@ function runChatGptWorkerCommand(command) {
     ];
     const blocks = candidates.filter((candidate) => !candidates.some((other) => other !== candidate && other.contains(candidate)));
     const textBlocks = blocks.length > 0 ? blocks : [element];
-    const text = textBlocks.map((block) => {
+    const textBlockValues = textBlocks.map((block) => {
       const html = block;
-      return typeof html.innerText === "string" ? html.innerText : block.textContent ?? "";
-    }).join("\n\n");
+      return {
+        rendered: typeof html.innerText === "string" ? html.innerText : block.textContent ?? "",
+        dom: block.textContent ?? ""
+      };
+    });
+    const text = textBlockValues.map(({ rendered }) => rendered).join("\n\n");
     const marker = element.matches(assistantMessageSelector) ? markerTextValues(element).map(findCompletionMarker).find((value) => Boolean(value)) : void 0;
-    const domText = textBlocks.map((node) => node.textContent ?? "").join("\n\n");
-    if (domText && marker && domText.includes(marker)) {
-      const normalizedDomText = normalizeCompletionMarkers(domText);
-      if (normalizedDomText !== text) return normalizedDomText;
+    if (marker) {
+      const normalizedDomText = textBlockValues.map(({ rendered, dom }) => findCompletionMarker(dom) === marker ? normalizeCompletionMarkers(dom) : rendered).join("\n\n");
+      if (normalizedDomText !== text && normalizedDomText.includes(marker)) return normalizedDomText;
     }
     if (marker && !text.includes(marker)) {
       return text ? `${text}
@@ -256,6 +282,7 @@ ${marker}` : marker;
       latestUserTruncated: user2.text === null ? previous?.latestUserTruncated ?? false : user2.truncated,
       latestAssistantText: assistant2.text ?? previous?.latestAssistantText ?? null,
       latestAssistantTruncated: assistant2.text === null ? previous?.latestAssistantTruncated ?? false : assistant2.truncated,
+      rateLimited: rateLimitModalVisible(),
       revision: (previous?.revision ?? 0) + 1,
       timestamp: Math.max(1, Date.now(), (previous?.timestamp ?? 0) + 1)
     };
@@ -359,7 +386,15 @@ ${marker}` : marker;
   const assistantMessages = Array.from(document.querySelectorAll(assistantMessageSelector));
   const user = boundedUserText(exactMessageText(userMessages.at(-1)));
   const assistant = boundedAssistantText(exactMessageText(assistantMessages.at(-1)));
-  return { ready, generating: document.querySelector(generatingSelector) !== null, latestUserText: user.text, latestUserTruncated: user.truncated, latestAssistantText: assistant.text, latestAssistantTruncated: assistant.truncated };
+  return {
+    ready,
+    generating: document.querySelector(generatingSelector) !== null,
+    latestUserText: user.text,
+    latestUserTruncated: user.truncated,
+    latestAssistantText: assistant.text,
+    latestAssistantTruncated: assistant.truncated,
+    rateLimited: rateLimitModalVisible()
+  };
 }
 
 // src/extension/background.ts
@@ -393,7 +428,7 @@ function sanitizeUrl(rawUrl) {
 function isChatGptWorkerSnapshot(value) {
   if (!value || typeof value !== "object") return false;
   const snapshot = value;
-  return typeof snapshot.ready === "boolean" && typeof snapshot.generating === "boolean" && (snapshot.latestUserText === null || typeof snapshot.latestUserText === "string" && snapshot.latestUserText.length <= 11e4) && typeof snapshot.latestUserTruncated === "boolean" && (snapshot.latestAssistantText === null || typeof snapshot.latestAssistantText === "string" && snapshot.latestAssistantText.length <= 3e4) && typeof snapshot.latestAssistantTruncated === "boolean" && typeof snapshot.revision === "number" && Number.isSafeInteger(snapshot.revision) && snapshot.revision > 0 && typeof snapshot.timestamp === "number" && Number.isSafeInteger(snapshot.timestamp) && snapshot.timestamp > 0;
+  return typeof snapshot.ready === "boolean" && typeof snapshot.generating === "boolean" && (snapshot.latestUserText === null || typeof snapshot.latestUserText === "string" && snapshot.latestUserText.length <= 11e4) && typeof snapshot.latestUserTruncated === "boolean" && (snapshot.latestAssistantText === null || typeof snapshot.latestAssistantText === "string" && snapshot.latestAssistantText.length <= 3e4) && typeof snapshot.latestAssistantTruncated === "boolean" && (snapshot.rateLimited === void 0 || typeof snapshot.rateLimited === "boolean") && typeof snapshot.revision === "number" && Number.isSafeInteger(snapshot.revision) && snapshot.revision > 0 && typeof snapshot.timestamp === "number" && Number.isSafeInteger(snapshot.timestamp) && snapshot.timestamp > 0;
 }
 function rememberChatGptWorkerSnapshot(tabId, snapshot) {
   if (!Number.isInteger(tabId) || tabId <= 0 || !isChatGptWorkerSnapshot(snapshot)) return;

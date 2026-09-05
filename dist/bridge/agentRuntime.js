@@ -68,12 +68,9 @@ function workerIdentityMatches(job, worker) {
         typeof worker.latestUserText === "string" &&
         worker.latestUserText.includes(job.completionMarker));
 }
-/** Recognizes ChatGPT's account-level request throttle before it is mistaken for worker output. */
+/** Recognizes the worker's structured rate-limit UI signal without inspecting response prose. */
 function workerAvailabilityError(worker) {
-    const text = worker.latestAssistantText?.toLowerCase() ?? "";
-    if (text.includes("too many requests") ||
-        text.includes("making requests too quickly") ||
-        text.includes("temporarily limited access to your conversations")) {
+    if (worker.rateLimited === true) {
         return {
             code: "CHATGPT_RATE_LIMITED",
             message: "ChatGPT temporarily limited requests in the worker tab",
@@ -811,6 +808,7 @@ export class AgentRuntime {
             (snapshot.latestAssistantText === null ||
                 (typeof snapshot.latestAssistantText === "string" && snapshot.latestAssistantText.length <= 30_000)) &&
             typeof snapshot.latestAssistantTruncated === "boolean" &&
+            (snapshot.rateLimited === undefined || typeof snapshot.rateLimited === "boolean") &&
             typeof snapshot.revision === "number" &&
             Number.isSafeInteger(snapshot.revision) &&
             snapshot.revision > 0 &&
@@ -877,6 +875,7 @@ export class AgentRuntime {
             latestUserTruncated: snapshot.latestUserTruncated,
             latestAssistantText: snapshot.latestAssistantText,
             latestAssistantTruncated: snapshot.latestAssistantTruncated,
+            rateLimited: snapshot.rateLimited === true,
         };
         this.rememberObservation(job, worker, "streaming_snapshot");
         if (!workerIdentityMatches(job, worker))

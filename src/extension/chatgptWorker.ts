@@ -10,6 +10,7 @@ export interface ChatGptWorkerSnapshot {
   latestUserTruncated: boolean;
   latestAssistantText: string | null;
   latestAssistantTruncated: boolean;
+  rateLimited: boolean;
   revision: number;
   timestamp: number;
 }
@@ -21,6 +22,7 @@ interface ChatGptWorkerReadResult {
   latestUserTruncated: boolean;
   latestAssistantText: string | null;
   latestAssistantTruncated: boolean;
+  rateLimited: boolean;
 }
 
 interface ChatGptWorkerSnapshotResult {
@@ -63,6 +65,13 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
   const completionMarkerTailCharacters = 1_024;
   const composerStateCommitDelayMilliseconds = 50;
   const completionMarkerPattern = /<<<SUBAGENT_DONE\s*:\s*([A-Za-z0-9_-]+(?:\s*-\s*[A-Za-z0-9_-]+)*)\s*>>>/g;
+  const rateLimitDialogSelector = '[role="dialog"], [role="alertdialog"], [role="alert"], [aria-modal="true"]';
+  const rateLimitTestIdSelector = '[data-testid*="rate-limit"], [data-testid*="rate_limit"]';
+  const rateLimitPhrases = [
+    "too many requests",
+    "making requests too quickly",
+    "temporarily limited access to your conversations",
+  ];
   const snapshotPublishDelayMilliseconds = 50;
   type ObserverState = {
     tabId: number;
@@ -72,6 +81,26 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
   };
   const observerHost = globalThis as typeof globalThis & {
     __chromeBrowserMcpChatGptWorkerObserver?: ObserverState;
+  };
+
+  /** Returns whether one modal-like element is currently visible to the user. */
+  const isVisibleElement = (node: Element): boolean => {
+    if (!(node instanceof HTMLElement)) return false;
+    const checkVisibility = (node as HTMLElement & { checkVisibility?: () => boolean }).checkVisibility;
+    if (typeof checkVisibility === "function") return checkVisibility.call(node);
+    if (node.hidden || node.getAttribute("aria-hidden") === "true") return false;
+    const style = typeof getComputedStyle === "function" ? getComputedStyle(node) : undefined;
+    return style?.display !== "none" && style?.visibility !== "hidden";
+  };
+
+  /** Detects rate-limit UI only within an explicit dialog/test-id boundary, never in assistant prose. */
+  const rateLimitModalVisible = (): boolean => {
+    if (Array.from(document.querySelectorAll(rateLimitTestIdSelector)).some(isVisibleElement)) return true;
+    return Array.from(document.querySelectorAll(rateLimitDialogSelector)).some((node) => {
+      if (!isVisibleElement(node)) return false;
+      const text = node.textContent?.toLowerCase() ?? "";
+      return rateLimitPhrases.some((phrase) => text.includes(phrase));
+    });
   };
 
   /** Reads all outermost message-content blocks in display order without duplicating nested markup. */
@@ -98,21 +127,24 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
     ];
     const blocks = candidates.filter((candidate) => !candidates.some((other) => other !== candidate && other.contains(candidate)));
     const textBlocks = blocks.length > 0 ? blocks : [element];
-    const text = textBlocks
-      .map((block) => {
-        const html = block as HTMLElement;
-        return typeof html.innerText === "string" ? html.innerText : block.textContent ?? "";
-      })
-      .join("\n\n");
+    const textBlockValues = textBlocks.map((block) => {
+      const html = block as HTMLElement;
+      return {
+        rendered: typeof html.innerText === "string" ? html.innerText : block.textContent ?? "",
+        dom: block.textContent ?? "",
+      };
+    });
+    const text = textBlockValues.map(({ rendered }) => rendered).join("\n\n");
     const marker = element.matches(assistantMessageSelector)
       ? markerTextValues(element)
           .map(findCompletionMarker)
           .find((value): value is string => Boolean(value))
       : undefined;
-    const domText = textBlocks.map((node) => node.textContent ?? "").join("\n\n");
-    if (domText && marker && domText.includes(marker)) {
-      const normalizedDomText = normalizeCompletionMarkers(domText);
-      if (normalizedDomText !== text) return normalizedDomText;
+    if (marker) {
+      const normalizedDomText = textBlockValues
+        .map(({ rendered, dom }) => (findCompletionMarker(dom) === marker ? normalizeCompletionMarkers(dom) : rendered))
+        .join("\n\n");
+      if (normalizedDomText !== text && normalizedDomText.includes(marker)) return normalizedDomText;
     }
     if (marker && !text.includes(marker)) {
       return text ? `${text}\n\n${marker}` : marker;
@@ -194,6 +226,7 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
       latestUserTruncated: user.text === null ? previous?.latestUserTruncated ?? false : user.truncated,
       latestAssistantText: assistant.text ?? previous?.latestAssistantText ?? null,
       latestAssistantTruncated: assistant.text === null ? previous?.latestAssistantTruncated ?? false : assistant.truncated,
+      rateLimited: rateLimitModalVisible(),
       revision: (previous?.revision ?? 0) + 1,
       timestamp: Math.max(1, Date.now(), (previous?.timestamp ?? 0) + 1),
     };
@@ -314,5 +347,13 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
   const assistantMessages = Array.from(document.querySelectorAll(assistantMessageSelector));
   const user = boundedUserText(exactMessageText(userMessages.at(-1)));
   const assistant = boundedAssistantText(exactMessageText(assistantMessages.at(-1)));
-  return { ready, generating: document.querySelector(generatingSelector) !== null, latestUserText: user.text, latestUserTruncated: user.truncated, latestAssistantText: assistant.text, latestAssistantTruncated: assistant.truncated };
+  return {
+    ready,
+    generating: document.querySelector(generatingSelector) !== null,
+    latestUserText: user.text,
+    latestUserTruncated: user.truncated,
+    latestAssistantText: assistant.text,
+    latestAssistantTruncated: assistant.truncated,
+    rateLimited: rateLimitModalVisible(),
+  };
 }
