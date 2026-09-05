@@ -143,32 +143,27 @@ blocked scheduler pass OR browser ready after reconnect
 - Existing lifecycle event validation: generating, stale, mismatched, and
   malformed evidence must retain capacity and avoid oversubscription.
 
-# Two-profile Chrome MCP with safe diagnostics
+# Two-profile Chrome MCP with safe diagnostics (completed)
 
-## Objective
+## Status
 
-Update the existing multi-profile PR in place so it supports only the current
-Chrome profile and the second subscription profile. Remove the agent-profile
-route and automated/live E2E harness while retaining the manual ChatGPT smoke
-checklist. Add opt-in, local, structured diagnostics that make browser bridge
-and browser-backed worker failures actionable without recording prompts, page
-content, credentials, cookies, or full URLs.
+Completed and merged in [PR #43](https://github.com/komaksym/chrome-browser-mcp/pull/43).
+The final repository supports the current Chrome profile and the second
+subscription profile. The third/agent profile and live ChatGPT E2E harness were
+intentionally removed; they are not follow-up work.
 
-## Milestones
+## Final contract
 
-1. Remove the agent profile from the checked-in topology, documentation, tunnel
-   validation, uninstall paths, and topology tests; regenerate only the two
-   supported extension artifacts.
-2. Add a bounded diagnostics logger with safe event fields, configurable level
-   and file output, and integrate it at MCP requests, browser transport, and
-   agent-runtime lifecycle seams.
-3. Expose only a safe diagnostics summary through `browser_status` and document
-   how to locate and collect per-profile logs for reproducible investigations.
-4. Run focused tests, typecheck/lint, the complete test suite, version and
-   artifact checks, and audit; review, commit, and push the simplified change
-   to the existing PR #43 branch.
+- `chrome` and `chrome2` are the only checked-in Chrome MCP routes.
+- The `spawn_agents` runtime and two-worker scheduling behavior remain intact.
+- Deterministic unit, integration, native-host, and extension tests are the
+  automated regression gate.
+- Real ChatGPT verification is manual and uses `docs/CHATGPT_SETUP.md`.
+- Per-instance stderr/JSONL diagnostics and `browser_status` provide the
+  supported debugging path without recording prompts, page content,
+  credentials, cookies, tokens, or full URLs.
 
-## System-level completion DAG
+## Completion DAG
 
 ```text
 ChatGPT tool call / browser event
@@ -179,29 +174,27 @@ ChatGPT tool call / browser event
               |
               +--> stderr (launcher-visible)
               |
-              +--> per-instance JSONL log (opt-in file)
+              +--> per-instance JSONL log
               |
               v
        browser_status summary
               |
               v
-     reproducible diagnosis without
-       prompts, page text, or secrets
+     reproducible manual diagnosis
 ```
 
-## Implementation tasks
+## Validation recorded by PR #43
 
-1. Update `scripts/instances.json`, tunnel usage, uninstall paths, README, and
-   `docs/CHATGPT_SETUP.md` for exactly `chrome` and `chrome2`.
-2. Replace three-profile topology assertions with two-profile assertions and
-   remove the automated/live E2E support that depends on a separate Chromium
-   process or ChatGPT session.
-3. Add `src/bridge/diagnosticsLogger.ts` and unit tests covering level filtering,
-   JSONL output, bounded in-memory summary, and rejection of sensitive fields.
-4. Inject the logger into `BrowserClient`, `AgentRuntime`, and MCP server
-   request handlers; log lifecycle transitions and stable error codes only.
-5. Set safe per-instance log defaults in the generated macOS wrappers, allow
-   explicit `CHROME_MCP_LOG_LEVEL`/`CHROME_MCP_LOG_FILE` overrides, and document
-   the two log locations and redaction boundary.
-6. Add/adjust integration assertions for `browser_status` diagnostics, build
-   the tracked runtime artifacts, and run all required validation commands.
+- `npm run check` passed.
+- Typecheck, lint, version, runtime-artifact, and dependency-audit checks
+  passed.
+- The live/automated ChatGPT E2E suite was deliberately removed; the manual
+  smoke checklist remains in `docs/CHATGPT_SETUP.md`.
+
+## Superseded direction
+
+The former live headed-ChatGPT E2E spec and its dependent issue chain are
+closed as not planned in [issue #35](https://github.com/komaksym/chrome-browser-mcp/issues/35).
+Do not add a VPS, Codespaces runner, automated ChatGPT login, nightly live
+smoke, or third Chrome profile unless the project direction is explicitly
+changed again.

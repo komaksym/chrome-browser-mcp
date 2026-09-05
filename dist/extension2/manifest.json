@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chrome Browser MCP 2",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "description": "Local Chrome read/write access for a private ChatGPT MCP app.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAhZi5NH7Lyhbwmvf9reB1mHzxD+29wU1dGQX7dXU5FNo2cWJjoXvVSMcomF8u+XhhWtvXZBX9aQBY/6qAte8SFZdvNi0kyGLELwf+i5xOBvB6aQycvQVHBkK+wtv7Q6t1dP8MsjxNo7OG1/O0ddrKud9+7x+90L7cWZtm30NdMpjqBHtJ3Dj1Z9ycXu5yaBPkGzQwxBhGIDfvfJUK6Iw7Pq8590yhi9itwyGDI3gtOGD/lKQCmVPNGU1ngDAN+TL2AI9xGTg2u6nZvBH3y/2kKM5aXlozJVykOXs2lTM0mgFo/8YtLCG/k38cYGdzZBtXO0aNsZXCYlb/1wVpZppZ0wIDAQAB",
   "minimum_chrome_version": "121",
