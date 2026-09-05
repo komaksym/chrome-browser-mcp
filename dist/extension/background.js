@@ -157,6 +157,7 @@ function runChatGptWorkerCommand(command) {
   const maxUserCharacters = 11e4;
   const truncationNotice = "\n\n[Worker output truncated for safety]\n\n";
   const completionMarkerTailCharacters = 1024;
+  const completionMarkerPattern = /<<<SUBAGENT_DONE:[^>\r\n]+>>>/g;
   const snapshotPublishDelayMilliseconds = 50;
   const observerHost = globalThis;
   const exactMessageText = (element) => {
@@ -168,10 +169,16 @@ function runChatGptWorkerCommand(command) {
     ];
     const blocks = candidates.filter((candidate) => !candidates.some((other) => other !== candidate && other.contains(candidate)));
     const textBlocks = blocks.length > 0 ? blocks : [element];
-    return textBlocks.map((block) => {
+    const text = textBlocks.map((block) => {
       const html = block;
       return typeof html.innerText === "string" ? html.innerText : block.textContent ?? "";
     }).join("\n\n");
+    const renderedText = element.innerText;
+    const marker = typeof renderedText === "string" ? renderedText.match(completionMarkerPattern)?.at(-1) : void 0;
+    if (marker && !text.includes(marker)) return text ? `${text}
+
+${marker}` : marker;
+    return text;
   };
   const boundedAssistantText = (text) => {
     if (text === null || text.length <= maxAssistantCharacters) return { text, truncated: false };

@@ -16,6 +16,7 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
   const maxUserCharacters = 110_000;
   const truncationNotice = "\n\n[Worker output truncated for safety]\n\n";
   const completionMarkerTailCharacters = 1_024;
+  const completionMarkerPattern = /<<<SUBAGENT_DONE:[^>\r\n]+>>>/g;
   const snapshotPublishDelayMilliseconds = 50;
   type Snapshot = {
     ready: boolean;
@@ -47,12 +48,17 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
     ];
     const blocks = candidates.filter((candidate) => !candidates.some((other) => other !== candidate && other.contains(candidate)));
     const textBlocks = blocks.length > 0 ? blocks : [element];
-    return textBlocks
+    const text = textBlocks
       .map((block) => {
         const html = block as HTMLElement;
         return typeof html.innerText === "string" ? html.innerText : block.textContent ?? "";
       })
       .join("\n\n");
+    const renderedText = (element as HTMLElement).innerText;
+    const marker =
+      typeof renderedText === "string" ? renderedText.match(completionMarkerPattern)?.at(-1) : undefined;
+    if (marker && !text.includes(marker)) return text ? `${text}\n\n${marker}` : marker;
+    return text;
   };
 
   /** Caps browser-derived assistant text while retaining its final protocol marker in the suffix. */
