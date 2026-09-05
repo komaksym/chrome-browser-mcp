@@ -149,10 +149,10 @@ function extractPage(options) {
 // src/extension/chatgptWorker.ts
 function runChatGptWorkerCommand(command) {
   const composerSelector = "#prompt-textarea";
-  const sendSelector = 'button[data-testid="send-button"]';
+  const sendSelector = 'button[data-testid="send-button"], #composer-submit-button';
   const userMessageSelector = '[data-message-author-role="user"]';
   const assistantMessageSelector = '[data-message-author-role="assistant"]';
-  const generatingSelector = 'button[data-testid="stop-button"], button[aria-label*="Stop generating"], button[aria-label="Stop"]';
+  const generatingSelector = 'button[data-testid="stop-button"], button[aria-label*="Stop generating"], button[aria-label="Stop"], #composer-submit-button[aria-label*="Stop"]';
   const maxAssistantCharacters = 3e4;
   const maxUserCharacters = 11e4;
   const truncationNotice = "\n\n[Worker output truncated for safety]\n\n";

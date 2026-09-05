@@ -7,11 +7,11 @@ export type ChatGptWorkerCommand =
 /** Submits a worker prompt or reads the exact bounded state of the latest ChatGPT exchange. */
 export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
   const composerSelector = "#prompt-textarea";
-  const sendSelector = 'button[data-testid="send-button"]';
+  const sendSelector = 'button[data-testid="send-button"], #composer-submit-button';
   const userMessageSelector = '[data-message-author-role="user"]';
   const assistantMessageSelector = '[data-message-author-role="assistant"]';
   const generatingSelector =
-    'button[data-testid="stop-button"], button[aria-label*="Stop generating"], button[aria-label="Stop"]';
+    'button[data-testid="stop-button"], button[aria-label*="Stop generating"], button[aria-label="Stop"], #composer-submit-button[aria-label*="Stop"]';
   const maxAssistantCharacters = 30_000;
   const maxUserCharacters = 110_000;
   const truncationNotice = "\n\n[Worker output truncated for safety]\n\n";

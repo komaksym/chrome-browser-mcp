@@ -173,6 +173,24 @@ describe("ChatGPT worker extension command", () => {
     });
   });
 
+  it("reports generation while ChatGPT reuses its composer button as stop control", () => {
+    document.body.innerHTML = `
+      <div id="prompt-textarea" contenteditable="true"></div>
+      <button id="composer-submit-button" aria-label="Stop answering">Stop</button>
+      <div data-message-author-role="user"></div>
+      <div data-message-author-role="assistant"></div>
+    `;
+    withInnerText(document.querySelector('[data-message-author-role="user"]')!, "task");
+    withInnerText(document.querySelector('[data-message-author-role="assistant"]')!, "partial");
+
+    expect(runChatGptWorkerCommand({ action: "read" })).toMatchObject({
+      ready: true,
+      generating: true,
+      latestAssistantText: "partial",
+      latestAssistantTruncated: false,
+    });
+  });
+
   it("submits through the worker command without exposing selector choreography to the caller", () => {
     document.body.innerHTML = `
       <div id="prompt-textarea" contenteditable="true"></div>
@@ -190,6 +208,21 @@ describe("ChatGPT worker extension command", () => {
     });
     expect(composer.textContent).toBe("worker task");
     expect(input).toHaveBeenCalledOnce();
+    expect(clicked).toHaveBeenCalledOnce();
+  });
+
+  it("submits through ChatGPT's current composer control", () => {
+    document.body.innerHTML = `
+      <div id="prompt-textarea" contenteditable="true"></div>
+      <button id="composer-submit-button">Send</button>
+    `;
+    const send = document.querySelector<HTMLButtonElement>("#composer-submit-button")!;
+    const clicked = vi.fn();
+    send.addEventListener("click", clicked);
+
+    expect(runChatGptWorkerCommand({ action: "submit", prompt: "worker task" })).toEqual({
+      submitted: true,
+    });
     expect(clicked).toHaveBeenCalledOnce();
   });
 
