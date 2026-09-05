@@ -159,7 +159,7 @@ function runChatGptWorkerCommand(command) {
   const completionMarkerTailCharacters = 1024;
   const composerStateCommitDelayMilliseconds = 50;
   const completionMarkerPattern = /<<<SUBAGENT_DONE\s*:\s*([A-Za-z0-9_-]+(?:\s*-\s*[A-Za-z0-9_-]+)*)\s*>>>/g;
-  const rateLimitDialogSelector = '[role="dialog"], [aria-modal="true"]';
+  const rateLimitDialogSelector = '[role="dialog"], [role="alertdialog"], [role="alert"], [aria-modal="true"]';
   const rateLimitTestIdSelector = '[data-testid*="rate-limit"], [data-testid*="rate_limit"]';
   const rateLimitPhrases = [
     "too many requests",
