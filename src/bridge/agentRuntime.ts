@@ -142,17 +142,8 @@ const transientCodes = new Set([
   "BROWSER_DISCONNECTED",
   "TIMEOUT",
 ]);
-const indefinitelyRecoverableWorkerCodes = new Set([
-  "CHATGPT_NOT_READY",
-  "NAVIGATION_IN_PROGRESS",
-  "EXTRACTION_FAILED",
-]);
 
 const MAX_TRANSIENT_FAILURES = 3;
-const MAX_SUBMISSION_ATTEMPTS = 60;
-// A reloaded ChatGPT conversation can take about two seconds to restore its
-// message DOM while the tab itself already reports status=complete.
-const FINISHED_OBSERVATION_REREAD_ATTEMPTS = 8;
 const MAX_WORKER_RESULT_CHARACTERS = 30_000;
 export const DEFAULT_MAX_ACTIVE_WORKERS = 2;
 const IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT";
@@ -425,10 +416,6 @@ export class AgentRuntime {
         await this.cancelAndSchedule(run);
       } else {
         await this.retryTransientJobs(run);
-        // Reconcile leased tabs before trusting a cached streaming snapshot. A
-        // worker tab can disappear without delivering its removal event, leaving
-        // a stale GENERATING snapshot that would otherwise keep the run pending.
-        await this.reconcileWorkerLeases();
         // A transient spawn/observation failure may have released its slot. Give the
         // scheduler a chance to re-dispatch it before taking this collection snapshot,
         // so one collect call can observe the recovered worker immediately.
@@ -850,9 +837,7 @@ export class AgentRuntime {
     const details = errorDetails(error);
     if (details.retryable) {
       job.transientFailures += 1;
-      const workerCanStillRecover =
-        job.tabId !== undefined && indefinitelyRecoverableWorkerCodes.has(details.code);
-      if (workerCanStillRecover || job.transientFailures < MAX_TRANSIENT_FAILURES) {
+      if (job.transientFailures < MAX_TRANSIENT_FAILURES) {
         job.error = details;
         job.state = "FAILED_TRANSIENT";
         this.diagnostics.log("error", "agent.job.failed", {
@@ -945,7 +930,7 @@ export class AgentRuntime {
   ): Promise<WorkerSubmitResult | undefined> {
     const prompt = attempt.job.submittedPrompt;
     let lastError: unknown;
-    for (let retry = 0; retry < MAX_SUBMISSION_ATTEMPTS; retry += 1) {
+    for (let retry = 0; retry < 20; retry += 1) {
       if (!this.isDispatchAttemptActive(attempt)) return;
       try {
         return await this.browser.request<WorkerSubmitResult>("chatgpt_worker_submit", { tabId, prompt });
@@ -977,7 +962,7 @@ export class AgentRuntime {
           // The follow-up probe is diagnostic; retry policy is driven by the original error.
         }
 
-        if (retry + 1 < MAX_SUBMISSION_ATTEMPTS) {
+        if (retry < 19) {
           const delayMs = Math.min(500, 50 * 2 ** Math.min(retry, 3));
           await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
         }
@@ -1242,7 +1227,7 @@ export class AgentRuntime {
 
     job.diagnostics.recovery_steps.push("bounded_reread");
     const reread = await this.recoveryAttempt(attempt, "bounded_reread", () =>
-      this.rereadWithBackoff(attempt, "backoff_reread", FINISHED_OBSERVATION_REREAD_ATTEMPTS),
+      this.rereadWithBackoff(attempt, "backoff_reread", 3),
     );
     if (!this.isDispatchAttemptActive(attempt) || Boolean(job.result)) return;
 
@@ -1251,7 +1236,7 @@ export class AgentRuntime {
       job.diagnostics.recovery_steps.push("reload_worker_tab");
       await this.recoveryAttempt(attempt, "reload_worker_tab", async () => {
         await this.browser.request("reload_worker_tab", { tabId });
-        return this.rereadWithBackoff(attempt, "reload_reread", FINISHED_OBSERVATION_REREAD_ATTEMPTS);
+        return this.rereadWithBackoff(attempt, "reload_reread", 4);
       });
     }
     if (!this.isDispatchAttemptActive(attempt) || Boolean(job.result)) return;

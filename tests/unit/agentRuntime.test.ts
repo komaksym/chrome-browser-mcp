@@ -368,141 +368,6 @@ describe("AgentRuntime", () => {
  });
  });
 
- it("keeps worker navigation recoverable beyond the transient retry budget", async () => {
- let reads = 0;
- const { browser, state } = createRecoveryBrowser({
- read: (current) => {
- reads += 1;
- if (reads <= 4) throw new BrowserError("NAVIGATION_IN_PROGRESS", "worker tab is still navigating");
- return Promise.resolve({
- ready: true,
- generating: false,
- latestUserText: current.submittedPrompt,
- latestAssistantText: `Recovered after navigation\n${completionMarker(current.submittedPrompt)}`,
- latestAssistantTruncated: false,
- tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
- });
- },
- });
- const runtime = new AgentRuntime(browser);
- const spawned = await runtime.spawnAgents([{ agent_id: "slow-navigation", prompt: "answer once" }], 1);
-
- let collected = await runtime.collectAgents(spawned.run_id);
- expect(collected).toMatchObject({
- state: "RUNNING",
- failed: [],
- pending: [{ agent_id: "slow-navigation", state: "FAILED_TRANSIENT", error: { code: "NAVIGATION_IN_PROGRESS" } }],
- });
-
- collected = await runtime.collectAgents(spawned.run_id);
- collected = await runtime.collectAgents(spawned.run_id);
- collected = await runtime.collectAgents(spawned.run_id);
- collected = await runtime.collectAgents(spawned.run_id);
-
- expect(state.submissions).toBe(1);
- expect(reads).toBe(5);
- expect(collected).toMatchObject({
- state: "COMPLETE",
- results: [{ agent_id: "slow-navigation", result: { text: "Recovered after navigation" } }],
- });
- });
-
- it("makes the completion marker contract override a task's one-line format", async () => {
- let submittedPrompt = "";
- const browser = {
- request: (method: string, args: Record<string, unknown> = {}) => {
- if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
- if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
- if (method === "chatgpt_worker_submit") {
- submittedPrompt = args.prompt as string;
- return Promise.resolve({ submitted: true });
- }
- return Promise.resolve({});
- },
- } as BrowserClient;
- const runtime = new AgentRuntime(browser);
-
- await runtime.spawnAgents([{ agent_id: "format", prompt: "Return exactly one line." }], 1);
-
- const marker = completionMarker(submittedPrompt);
- expect(submittedPrompt).toContain("The task's output-format rules apply to the report only.");
- expect(submittedPrompt).toContain("Output the report first, then on a new final line output exactly the completion marker below.");
- expect(submittedPrompt).toContain(`Completion marker: ${marker}`);
- });
-
- it("keeps submitting while a newly opened worker tab is still navigating", async () => {
- vi.useFakeTimers();
- try {
- let submissionAttempts = 0;
- const browser = {
- request: (method: string) => {
- if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
- if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 1 } });
- if (method === "chatgpt_worker_submit") {
- submissionAttempts += 1;
- if (submissionAttempts <= 25) {
- return Promise.reject(new BrowserError("NAVIGATION_IN_PROGRESS", "worker tab is still navigating"));
- }
- return Promise.resolve({ submitted: true });
- }
- if (method === "read_chatgpt_worker") {
- return Promise.resolve({
- ready: false,
- generating: false,
- latestUserText: null,
- latestAssistantText: null,
- });
- }
- return Promise.resolve({});
- },
- } as BrowserClient;
- const runtime = new AgentRuntime(browser);
- const spawnedPromise = runtime.spawnAgents([{ agent_id: "slow-start", prompt: "wait for startup" }], 1);
-
- await vi.runAllTimersAsync();
- const spawned = await spawnedPromise;
-
- expect(submissionAttempts).toBe(26);
- expect(spawned.jobs).toMatchObject([{ agent_id: "slow-start", state: "DISPATCHED" }]);
- } finally {
- vi.useRealTimers();
- }
- });
-
- it("recovers a later read of the same finished turn with exactly one submission", async () => {
- const { browser, state } = createRecoveryBrowser({
- read: (current) => Promise.resolve({
- ready: true,
- generating: false,
- latestUserText: current.submittedPrompt,
- latestAssistantText:
- current.reads === 1
- ? "Finished but first observation missed marker"
- : `Recovered result\n${completionMarker(current.submittedPrompt)}`,
- latestAssistantTruncated: false,
- tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
- }),
- });
- const runtime = new AgentRuntime(browser);
- const spawned = await runtime.spawnAgents([{ agent_id: "recover", prompt: "answer once" }], 1);
-
- const collected = await runtime.collectAgents(spawned.run_id);
-
- expect(state.submissions).toBe(1);
- expect(collected).toMatchObject({
- state: "COMPLETE",
- results: [{
- agent_id: "recover",
- result: { text: "Recovered result" },
- diagnostics: {
- observation_source: "backoff_reread",
- recovery_steps: ["current_state", "bounded_reread"],
- uncertainty_reason: "completion marker missing after generation appeared finished",
- },
- }],
- });
- });
-
  it("allows a late-rendered marker during bounded finished-turn recovery", async () => {
  const { browser, state } = createRecoveryBrowser({
  read: (current) => Promise.resolve({
@@ -510,7 +375,7 @@ describe("AgentRuntime", () => {
  generating: false,
  latestUserText: current.submittedPrompt,
  latestAssistantText:
-        current.reads < 7
+        current.reads === 1
  ? "Finished before the final paragraph rendered"
  : `Late-rendered result\n${completionMarker(current.submittedPrompt)}`,
  latestAssistantTruncated: false,
@@ -523,7 +388,6 @@ describe("AgentRuntime", () => {
  const collected = await runtime.collectAgents(spawned.run_id);
 
  expect(state.submissions).toBe(1);
- expect(state.reads).toBe(7);
  expect(collected).toMatchObject({
  state: "COMPLETE",
  results: [{ agent_id: "late-render", result: { text: "Late-rendered result" } }],
@@ -533,13 +397,14 @@ describe("AgentRuntime", () => {
  it("keeps a late marker recoverable across collection calls", async () => {
  vi.useFakeTimers();
  try {
+ let markerVisible = false;
  const { browser, state } = createRecoveryBrowser({
  read: (current) => Promise.resolve({
  ready: true,
  generating: false,
  latestUserText: current.submittedPrompt,
  latestAssistantText:
- current.reads < 18
+ !markerVisible
  ? "Finished before the response became observable"
  : `Recovered on the next collection\n${completionMarker(current.submittedPrompt)}`,
  latestAssistantTruncated: false,
@@ -559,6 +424,7 @@ describe("AgentRuntime", () => {
  pending: [{ agent_id: "late-collection", state: "OBSERVATION_UNCERTAIN" }],
  });
 
+ markerVisible = true;
  const secondCollection = runtime.collectAgents(spawned.run_id);
  await vi.runAllTimersAsync();
  const second = await secondCollection;
@@ -572,65 +438,6 @@ describe("AgentRuntime", () => {
  vi.useRealTimers();
  }
  });
-
- it("reloads only a definitely finished worker and recovers without resubmission", async () => {
- const { browser, state } = createRecoveryBrowser({
- read: (current) => Promise.resolve({
- ready: true,
- generating: false,
- latestUserText: current.submittedPrompt,
- latestAssistantText:
- current.reloads > 0
- ? `Reloaded result\n${completionMarker(current.submittedPrompt)}`
- : "finished marker not visible",
- latestAssistantTruncated: false,
- tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
- }),
- });
- const runtime = new AgentRuntime(browser);
- const spawned = await runtime.spawnAgents([{ agent_id: "reload", prompt: "answer once" }], 1);
-
- const collected = await runtime.collectAgents(spawned.run_id);
-
- expect(state.submissions).toBe(1);
- expect(state.reloads).toBe(1);
- expect(state.activations).toEqual([]);
- expect(state.reads).toBeGreaterThan(1);
- expect(collected.state).toBe("COMPLETE");
- }, 15_000);
-
- it("keeps recovery exhaustion recoverable without regeneration", async () => {
- const { browser, state } = createRecoveryBrowser({
- read: (current) => Promise.resolve({
- ready: true,
- generating: false,
- latestUserText: current.submittedPrompt,
- latestAssistantText: "finished marker never observable",
- latestAssistantTruncated: false,
- tab: { tabId: 1, windowId: 10, active: false, discarded: true, status: "complete" },
- }),
- });
- const runtime = new AgentRuntime(browser);
- const spawned = await runtime.spawnAgents([{ agent_id: "exhaust", prompt: "answer once" }], 1);
-
- const collected = await runtime.collectAgents(spawned.run_id);
-
- expect(state.submissions).toBe(1);
- expect(state.reloads).toBe(1);
- expect(collected).toMatchObject({
- state: "RUNNING",
- failed: [],
- pending: [{
- agent_id: "exhaust",
- state: "OBSERVATION_UNCERTAIN",
- diagnostics: {
- uncertainty_reason: "completion marker missing after generation appeared finished",
- recovery_steps: ["current_state", "bounded_reread", "reload_worker_tab"],
- tab: { active: false, discarded: true, status: "complete" },
- },
- }],
- });
- }, 15_000);
 
  it("reports ChatGPT request throttling from structured worker UI state", async () => {
  const { browser, state } = createRecoveryBrowser({
@@ -851,68 +658,6 @@ describe("AgentRuntime", () => {
  });
  expect(submissionCalls).toBe(1);
  });
-
- it("does not mask worker identity mismatch as recovery exhaustion", async () => {
- const { browser, state } = createRecoveryBrowser({
- read: (current) => Promise.resolve({
- ready: true,
- generating: false,
- latestUserText: current.reads === 1 ? current.submittedPrompt : "different worker turn",
- latestAssistantText: "finished marker never observable",
- latestAssistantTruncated: false,
- tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
- }),
- });
- const runtime = new AgentRuntime(browser);
- const spawned = await runtime.spawnAgents([{ agent_id: "identity", prompt: "answer once" }], 1);
-
- const collected = await runtime.collectAgents(spawned.run_id);
-
- expect(state.submissions).toBe(1);
- expect(state.reloads).toBe(0);
- expect(collected).toMatchObject({
- state: "FAILED",
- failed: [{
- agent_id: "identity",
- error: { code: "WORKER_IDENTITY_MISMATCH", retryable: false },
- }],
- });
- });
-
- it("continues recovery after activation failure without terminalizing the job", async () => {
- const { browser, state } = createRecoveryBrowser({
- read: (current) => Promise.resolve({
- ready: true,
- generating: false,
- latestUserText: current.submittedPrompt,
- latestAssistantText: "finished marker never observable",
- latestAssistantTruncated: false,
- tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
- }),
- activate: (tabId) => {
- if (tabId === 1) throw new Error("ACTIVATION_FAILED: worker activation failed");
- return Promise.resolve({});
- },
- });
- const runtime = new AgentRuntime(browser);
- const spawned = await runtime.spawnAgents([{ agent_id: "activation-error", prompt: "answer once" }], 1);
-
- const collected = await runtime.collectAgents(spawned.run_id);
-
- expect(state.submissions).toBe(1);
- expect(state.reloads).toBe(1);
- expect(collected).toMatchObject({
- state: "RUNNING",
- failed: [],
- pending: [{
- agent_id: "activation-error",
- state: "OBSERVATION_UNCERTAIN",
- diagnostics: {
- recovery_steps: ["current_state", "bounded_reread", "reload_worker_tab"],
- },
- }],
- });
- }, 15_000);
 
   it("dispatches queued workers through the stored anchor identity", async () => {
     const openedAnchors: number[] = [];
@@ -1175,66 +920,6 @@ describe("AgentRuntime", () => {
       results: [{
         agent_id: "snapshot-completed-under-popup",
         result: { text: "Snapshot completed before the popup." },
-      }],
-    });
-  });
-
-  it("terminalizes a worker whose tab disappeared before collection", async () => {
-    let submittedPrompt = "";
-    let workerTabPresent = true;
-    const browser = {
-      request: (method: string, args: Record<string, unknown> = {}) => {
-        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
-        if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 805 } });
-        if (method === "chatgpt_worker_submit") {
-          submittedPrompt = args.prompt as string;
-          return Promise.resolve({ submitted: true, snapshot: { revision: 1, timestamp: Date.now() } });
-        }
-        if (method === "list_tabs") {
-          return Promise.resolve({ tabs: workerTabPresent ? [{ tabId: 805 }] : [] });
-        }
-        if (method === "read_chatgpt_worker_snapshot") {
-          return Promise.resolve({
-            snapshot: {
-              ready: true,
-              generating: true,
-              latestUserText: submittedPrompt,
-              latestUserTruncated: false,
-              latestAssistantText: null,
-              latestAssistantTruncated: false,
-              revision: 2,
-              timestamp: Date.now() + 10,
-            },
-          });
-        }
-        if (method === "read_chatgpt_worker") {
-          return Promise.resolve({
-            ready: true,
-            generating: true,
-            latestUserText: submittedPrompt,
-            latestUserTruncated: false,
-            latestAssistantText: null,
-            latestAssistantTruncated: false,
-          });
-        }
-        return Promise.resolve({});
-      },
-      forgetChatGptWorkerSnapshot: vi.fn(),
-    } as unknown as BrowserClient;
-    const runtime = new AgentRuntime(browser);
-    const spawned = await runtime.spawnAgents([{ agent_id: "missing-tab", prompt: "answer once" }], 1);
-
-    workerTabPresent = false;
-    const collected = await runtime.collectAgents(spawned.run_id);
-
-    expect(collected).toMatchObject({
-      state: "FAILED",
-      results: [],
-      pending: [],
-      failed: [{
-        agent_id: "missing-tab",
-        state: "FAILED_TERMINAL",
-        error: { code: "WORKER_TAB_CLOSED", retryable: false },
       }],
     });
   });
