@@ -57,6 +57,7 @@ function validChatGptWorkerSnapshot(raw: unknown): ChatGptWorkerSnapshot | undef
     typeof snapshot.latestUserTruncated !== "boolean" ||
     (typeof snapshot.latestAssistantText !== "string" && snapshot.latestAssistantText !== null) ||
     typeof snapshot.latestAssistantTruncated !== "boolean" ||
+    (snapshot.rateLimited !== undefined && typeof snapshot.rateLimited !== "boolean") ||
     typeof revision !== "number" ||
     !Number.isSafeInteger(revision) ||
     revision <= 0 ||
@@ -79,6 +80,7 @@ function validChatGptWorkerSnapshot(raw: unknown): ChatGptWorkerSnapshot | undef
     latestUserTruncated: snapshot.latestUserTruncated,
     latestAssistantText: snapshot.latestAssistantText,
     latestAssistantTruncated: snapshot.latestAssistantTruncated,
+    ...(typeof snapshot.rateLimited === "boolean" ? { rateLimited: snapshot.rateLimited } : {}),
     revision,
     timestamp,
   };

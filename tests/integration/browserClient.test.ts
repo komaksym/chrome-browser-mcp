@@ -113,6 +113,29 @@ describe("BrowserClient", () => {
     expect(client.latestChatGptWorkerSnapshot(42)).toBeUndefined();
   });
 
+  it("preserves the structured rate-limit UI signal in cached worker snapshots", () => {
+    const fromExtension = new PassThrough();
+    const client = new BrowserClient(fromExtension, new PassThrough(), 2_000);
+    writeNativeMessage(fromExtension, {
+      type: "event",
+      event: "chatgpt_worker_snapshot",
+      tabId: 42,
+      snapshot: {
+        ready: true,
+        generating: false,
+        latestUserText: "Worker prompt",
+        latestUserTruncated: false,
+        latestAssistantText: "The worker response is unrelated prose.",
+        latestAssistantTruncated: false,
+        rateLimited: true,
+        revision: 3,
+        timestamp: 1_700_000_000_000,
+      },
+    });
+
+    expect(client.latestChatGptWorkerSnapshot(42)).toMatchObject({ rateLimited: true });
+  });
+
   it("rejects oversized ChatGPT worker snapshot events", () => {
     const fromExtension = new PassThrough();
     const client = new BrowserClient(fromExtension, new PassThrough(), 2_000);

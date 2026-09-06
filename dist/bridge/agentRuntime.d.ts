@@ -13,6 +13,7 @@ interface WorkerReadResult {
     latestUserTruncated?: boolean;
     latestAssistantText: string | null;
     latestAssistantTruncated?: boolean;
+    rateLimited?: boolean;
     tab?: WorkerTabState;
 }
 interface WorkerTabState {

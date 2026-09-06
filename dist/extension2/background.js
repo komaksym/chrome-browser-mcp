@@ -149,18 +149,56 @@ function extractPage(options) {
 // src/extension/chatgptWorker.ts
 function runChatGptWorkerCommand(command) {
   const composerSelector = "#prompt-textarea";
-  const sendSelector = 'button[data-testid="send-button"]';
+  const sendSelector = 'button[data-testid="send-button"], #composer-submit-button';
   const userMessageSelector = '[data-message-author-role="user"]';
   const assistantMessageSelector = '[data-message-author-role="assistant"]';
-  const generatingSelector = 'button[data-testid="stop-button"], button[aria-label*="Stop generating"], button[aria-label="Stop"]';
+  const generatingSelector = 'button[data-testid="stop-button"], button[aria-label*="Stop generating"], button[aria-label="Stop"], #composer-submit-button[aria-label*="Stop"]';
   const maxAssistantCharacters = 3e4;
   const maxUserCharacters = 11e4;
   const truncationNotice = "\n\n[Worker output truncated for safety]\n\n";
   const completionMarkerTailCharacters = 1024;
+  const composerStateCommitDelayMilliseconds = 50;
+  const completionMarkerPattern = /<<<SUBAGENT_DONE\s*:\s*([A-Za-z0-9_-]+(?:\s*-\s*[A-Za-z0-9_-]+)*)\s*>>>/g;
+  const rateLimitDialogSelector = '[role="dialog"], [role="alertdialog"], [role="alert"], [aria-modal="true"]';
+  const rateLimitTestIdSelector = '[data-testid*="rate-limit"], [data-testid*="rate_limit"]';
+  const rateLimitPhrases = [
+    "too many requests",
+    "making requests too quickly",
+    "temporarily limited access to your conversations"
+  ];
   const snapshotPublishDelayMilliseconds = 50;
   const observerHost = globalThis;
+  const isVisibleElement = (node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    const checkVisibility = node.checkVisibility;
+    if (typeof checkVisibility === "function") return checkVisibility.call(node);
+    if (node.hidden || node.getAttribute("aria-hidden") === "true") return false;
+    const style = typeof getComputedStyle === "function" ? getComputedStyle(node) : void 0;
+    return style?.display !== "none" && style?.visibility !== "hidden";
+  };
+  const rateLimitModalVisible = () => {
+    if (Array.from(document.querySelectorAll(rateLimitTestIdSelector)).some(isVisibleElement)) return true;
+    return Array.from(document.querySelectorAll(rateLimitDialogSelector)).some((node) => {
+      if (!isVisibleElement(node)) return false;
+      const text = node.textContent?.toLowerCase() ?? "";
+      return rateLimitPhrases.some((phrase) => text.includes(phrase));
+    });
+  };
   const exactMessageText = (element) => {
     if (!element) return null;
+    const findCompletionMarker = (value) => {
+      if (typeof value !== "string") return void 0;
+      const matches = Array.from(value.matchAll(completionMarkerPattern));
+      const payload = matches.at(-1)?.[1];
+      return payload ? `<<<SUBAGENT_DONE:${payload.replace(/\s+/g, "")}>>>` : void 0;
+    };
+    const normalizeCompletionMarkers = (value) => value.replace(completionMarkerPattern, (match) => findCompletionMarker(match) ?? match);
+    const markerTextValues = (node) => {
+      const values = [];
+      if (node instanceof HTMLElement && typeof node.innerText === "string") values.push(node.innerText);
+      if (typeof node.textContent === "string" && node.textContent !== values[0]) values.push(node.textContent);
+      return values;
+    };
     const contentSelector = ".markdown, [data-message-content]";
     const candidates = [
       ...element.matches(contentSelector) ? [element] : [],
@@ -168,10 +206,25 @@ function runChatGptWorkerCommand(command) {
     ];
     const blocks = candidates.filter((candidate) => !candidates.some((other) => other !== candidate && other.contains(candidate)));
     const textBlocks = blocks.length > 0 ? blocks : [element];
-    return textBlocks.map((block) => {
+    const textBlockValues = textBlocks.map((block) => {
       const html = block;
-      return typeof html.innerText === "string" ? html.innerText : block.textContent ?? "";
-    }).join("\n\n");
+      return {
+        rendered: typeof html.innerText === "string" ? html.innerText : block.textContent ?? "",
+        dom: block.textContent ?? ""
+      };
+    });
+    const text = textBlockValues.map(({ rendered }) => rendered).join("\n\n");
+    const marker = element.matches(assistantMessageSelector) ? markerTextValues(element).map(findCompletionMarker).find((value) => Boolean(value)) : void 0;
+    if (marker) {
+      const normalizedDomText = textBlockValues.map(({ rendered, dom }) => findCompletionMarker(dom) === marker ? normalizeCompletionMarkers(dom) : rendered).join("\n\n");
+      if (normalizedDomText !== text && normalizedDomText.includes(marker)) return normalizedDomText;
+    }
+    if (marker && !text.includes(marker)) {
+      return text ? `${text}
+
+${marker}` : marker;
+    }
+    return normalizeCompletionMarkers(text);
   };
   const boundedAssistantText = (text) => {
     if (text === null || text.length <= maxAssistantCharacters) return { text, truncated: false };
@@ -190,6 +243,16 @@ function runChatGptWorkerCommand(command) {
     const composer2 = document.querySelector(composerSelector);
     const ready2 = composer2 instanceof HTMLElement && !("disabled" in composer2 && Boolean(composer2.disabled)) && !("readOnly" in composer2 && Boolean(composer2.readOnly));
     return { composer: composer2, ready: ready2 };
+  };
+  const activeSendButton = () => Array.from(document.querySelectorAll(sendSelector)).find((element) => {
+    if (!(element instanceof HTMLButtonElement) || element.disabled) return false;
+    const checkVisibility = element.checkVisibility;
+    return typeof checkVisibility !== "function" || checkVisibility.call(element);
+  });
+  const replaceContentEditable = (element, value) => {
+    element.focus();
+    element.textContent = value;
+    element.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
   };
   const latestRemovedMessage = (records, selector) => {
     const candidates = [];
@@ -219,6 +282,7 @@ function runChatGptWorkerCommand(command) {
       latestUserTruncated: user2.text === null ? previous?.latestUserTruncated ?? false : user2.truncated,
       latestAssistantText: assistant2.text ?? previous?.latestAssistantText ?? null,
       latestAssistantTruncated: assistant2.text === null ? previous?.latestAssistantTruncated ?? false : assistant2.truncated,
+      rateLimited: rateLimitModalVisible(),
       revision: (previous?.revision ?? 0) + 1,
       timestamp: Math.max(1, Date.now(), (previous?.timestamp ?? 0) + 1)
     };
@@ -301,24 +365,36 @@ function runChatGptWorkerCommand(command) {
       if (descriptor?.set) descriptor.set.call(composer, command.prompt);
       else composer.value = command.prompt;
     } else if (composer.isContentEditable || composer.getAttribute("contenteditable") === "true") {
-      composer.textContent = command.prompt;
+      replaceContentEditable(composer, command.prompt);
     } else {
       throw new Error("CHATGPT_NOT_READY: composer is not editable");
     }
-    composer.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
     composer.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
-    const sendButton = document.querySelector(sendSelector);
-    if (!(sendButton instanceof HTMLButtonElement) || sendButton.disabled) {
-      throw new Error("CHATGPT_NOT_READY: send button is not ready");
-    }
-    sendButton.click();
-    return snapshot === void 0 ? { submitted: true } : { submitted: true, snapshot };
+    return new Promise((resolve, reject) => {
+      setTimeout(() => {
+        const sendButton = activeSendButton();
+        if (!sendButton) {
+          reject(new Error("CHATGPT_NOT_READY: send button is not ready"));
+          return;
+        }
+        sendButton.click();
+        resolve(snapshot === void 0 ? { submitted: true } : { submitted: true, snapshot });
+      }, composerStateCommitDelayMilliseconds);
+    });
   }
   const userMessages = Array.from(document.querySelectorAll(userMessageSelector));
   const assistantMessages = Array.from(document.querySelectorAll(assistantMessageSelector));
   const user = boundedUserText(exactMessageText(userMessages.at(-1)));
   const assistant = boundedAssistantText(exactMessageText(assistantMessages.at(-1)));
-  return { ready, generating: document.querySelector(generatingSelector) !== null, latestUserText: user.text, latestUserTruncated: user.truncated, latestAssistantText: assistant.text, latestAssistantTruncated: assistant.truncated };
+  return {
+    ready,
+    generating: document.querySelector(generatingSelector) !== null,
+    latestUserText: user.text,
+    latestUserTruncated: user.truncated,
+    latestAssistantText: assistant.text,
+    latestAssistantTruncated: assistant.truncated,
+    rateLimited: rateLimitModalVisible()
+  };
 }
 
 // src/extension/background.ts
@@ -352,7 +428,7 @@ function sanitizeUrl(rawUrl) {
 function isChatGptWorkerSnapshot(value) {
   if (!value || typeof value !== "object") return false;
   const snapshot = value;
-  return typeof snapshot.ready === "boolean" && typeof snapshot.generating === "boolean" && (snapshot.latestUserText === null || typeof snapshot.latestUserText === "string" && snapshot.latestUserText.length <= 11e4) && typeof snapshot.latestUserTruncated === "boolean" && (snapshot.latestAssistantText === null || typeof snapshot.latestAssistantText === "string" && snapshot.latestAssistantText.length <= 3e4) && typeof snapshot.latestAssistantTruncated === "boolean" && typeof snapshot.revision === "number" && Number.isSafeInteger(snapshot.revision) && snapshot.revision > 0 && typeof snapshot.timestamp === "number" && Number.isSafeInteger(snapshot.timestamp) && snapshot.timestamp > 0;
+  return typeof snapshot.ready === "boolean" && typeof snapshot.generating === "boolean" && (snapshot.latestUserText === null || typeof snapshot.latestUserText === "string" && snapshot.latestUserText.length <= 11e4) && typeof snapshot.latestUserTruncated === "boolean" && (snapshot.latestAssistantText === null || typeof snapshot.latestAssistantText === "string" && snapshot.latestAssistantText.length <= 3e4) && typeof snapshot.latestAssistantTruncated === "boolean" && (snapshot.rateLimited === void 0 || typeof snapshot.rateLimited === "boolean") && typeof snapshot.revision === "number" && Number.isSafeInteger(snapshot.revision) && snapshot.revision > 0 && typeof snapshot.timestamp === "number" && Number.isSafeInteger(snapshot.timestamp) && snapshot.timestamp > 0;
 }
 function rememberChatGptWorkerSnapshot(tabId, snapshot) {
   if (!Number.isInteger(tabId) || tabId <= 0 || !isChatGptWorkerSnapshot(snapshot)) return;

@@ -9,7 +9,16 @@ const transientCodes = new Set([
     "BROWSER_DISCONNECTED",
     "TIMEOUT",
 ]);
+const indefinitelyRecoverableWorkerCodes = new Set([
+    "CHATGPT_NOT_READY",
+    "NAVIGATION_IN_PROGRESS",
+    "EXTRACTION_FAILED",
+]);
 const MAX_TRANSIENT_FAILURES = 3;
+const MAX_SUBMISSION_ATTEMPTS = 60;
+// A reloaded ChatGPT conversation can take about two seconds to restore its
+// message DOM while the tab itself already reports status=complete.
+const FINISHED_OBSERVATION_REREAD_ATTEMPTS = 8;
 const MAX_WORKER_RESULT_CHARACTERS = 30_000;
 export const DEFAULT_MAX_ACTIVE_WORKERS = 2;
 const IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT";
@@ -47,7 +56,10 @@ function buildWorkerPrompt(job, prompt) {
         "",
         "Complete the task independently and return the useful result directly.",
         "Do not discuss this protocol.",
-        `As the final line of your response, output exactly: ${job.completionMarker}`,
+        "The task's output-format rules apply to the report only.",
+        "Output the report first, then on a new final line output exactly the completion marker below.",
+        "That final marker is mandatory even when the task asks for one line; do not omit or alter it.",
+        `Completion marker: ${job.completionMarker}`,
     ].join("\n");
 }
 /** Returns whether one observed user turn carries this job's unguessable protocol marker. */
@@ -55,6 +67,17 @@ function workerIdentityMatches(job, worker) {
     return (!worker.latestUserTruncated &&
         typeof worker.latestUserText === "string" &&
         worker.latestUserText.includes(job.completionMarker));
+}
+/** Recognizes the worker's structured rate-limit UI signal without inspecting response prose. */
+function workerAvailabilityError(worker) {
+    if (worker.rateLimited === true) {
+        return {
+            code: "CHATGPT_RATE_LIMITED",
+            message: "ChatGPT temporarily limited requests in the worker tab",
+            retryable: false,
+        };
+    }
+    return undefined;
 }
 /** Returns whether the current job state is a final lifecycle outcome. */
 function isTerminalJob(job) {
@@ -243,6 +266,10 @@ export class AgentRuntime {
             }
             else {
                 await this.retryTransientJobs(run);
+                // Reconcile leased tabs before trusting a cached streaming snapshot. A
+                // worker tab can disappear without delivering its removal event, leaving
+                // a stale GENERATING snapshot that would otherwise keep the run pending.
+                await this.reconcileWorkerLeases();
                 // A transient spawn/observation failure may have released its slot. Give the
                 // scheduler a chance to re-dispatch it before taking this collection snapshot,
                 // so one collect call can observe the recovered worker immediately.
@@ -633,7 +660,8 @@ export class AgentRuntime {
         const details = errorDetails(error);
         if (details.retryable) {
             job.transientFailures += 1;
-            if (job.transientFailures < MAX_TRANSIENT_FAILURES) {
+            const workerCanStillRecover = job.tabId !== undefined && indefinitelyRecoverableWorkerCodes.has(details.code);
+            if (workerCanStillRecover || job.transientFailures < MAX_TRANSIENT_FAILURES) {
                 job.error = details;
                 job.state = "FAILED_TRANSIENT";
                 this.diagnostics.log("error", "agent.job.failed", {
@@ -724,7 +752,7 @@ export class AgentRuntime {
     async submitWithRetry(attempt, tabId) {
         const prompt = attempt.job.submittedPrompt;
         let lastError;
-        for (let retry = 0; retry < 20; retry += 1) {
+        for (let retry = 0; retry < MAX_SUBMISSION_ATTEMPTS; retry += 1) {
             if (!this.isDispatchAttemptActive(attempt))
                 return;
             try {
@@ -759,7 +787,7 @@ export class AgentRuntime {
                 catch {
                     // The follow-up probe is diagnostic; retry policy is driven by the original error.
                 }
-                if (retry < 19) {
+                if (retry + 1 < MAX_SUBMISSION_ATTEMPTS) {
                     const delayMs = Math.min(500, 50 * 2 ** Math.min(retry, 3));
                     await new Promise((resolve) => setTimeout(resolve, delayMs));
                 }
@@ -780,6 +808,7 @@ export class AgentRuntime {
             (snapshot.latestAssistantText === null ||
                 (typeof snapshot.latestAssistantText === "string" && snapshot.latestAssistantText.length <= 30_000)) &&
             typeof snapshot.latestAssistantTruncated === "boolean" &&
+            (snapshot.rateLimited === undefined || typeof snapshot.rateLimited === "boolean") &&
             typeof snapshot.revision === "number" &&
             Number.isSafeInteger(snapshot.revision) &&
             snapshot.revision > 0 &&
@@ -846,6 +875,7 @@ export class AgentRuntime {
             latestUserTruncated: snapshot.latestUserTruncated,
             latestAssistantText: snapshot.latestAssistantText,
             latestAssistantTruncated: snapshot.latestAssistantTruncated,
+            rateLimited: snapshot.rateLimited === true,
         };
         this.rememberObservation(job, worker, "streaming_snapshot");
         if (!workerIdentityMatches(job, worker))
@@ -1006,7 +1036,7 @@ export class AgentRuntime {
         if (!this.isDispatchAttemptActive(attempt) || currentAccepted || Boolean(job.result))
             return;
         job.diagnostics.recovery_steps.push("bounded_reread");
-        const reread = await this.recoveryAttempt(attempt, "bounded_reread", () => this.rereadWithBackoff(attempt, "backoff_reread", 3));
+        const reread = await this.recoveryAttempt(attempt, "bounded_reread", () => this.rereadWithBackoff(attempt, "backoff_reread", FINISHED_OBSERVATION_REREAD_ATTEMPTS));
         if (!this.isDispatchAttemptActive(attempt) || Boolean(job.result))
             return;
         const latest = reread ?? initial;
@@ -1014,27 +1044,23 @@ export class AgentRuntime {
             job.diagnostics.recovery_steps.push("reload_worker_tab");
             await this.recoveryAttempt(attempt, "reload_worker_tab", async () => {
                 await this.browser.request("reload_worker_tab", { tabId });
-                return this.rereadWithBackoff(attempt, "reload_reread", 4);
+                return this.rereadWithBackoff(attempt, "reload_reread", FINISHED_OBSERVATION_REREAD_ATTEMPTS);
             });
         }
         if (!this.isDispatchAttemptActive(attempt) || Boolean(job.result))
             return;
-        job.error = {
-            code: "RECOVERY_EXHAUSTED",
-            message: "Finished worker result could not be verified after bounded observation recovery",
-            retryable: false,
-        };
-        job.state = "FAILED_TERMINAL";
-        this.diagnostics.log("error", "agent.job.failed", {
+        // A missing marker after this bounded ladder proves only that this browser
+        // observation was incomplete. Keep the worker lease and let the next
+        // collect_agents call observe the same turn again; terminalizing here can
+        // discard a response that ChatGPT renders immediately after the reload.
+        job.state = "OBSERVATION_UNCERTAIN";
+        this.diagnostics.log("info", "agent.job.state", {
             runId: run.runId,
             jobId: job.jobId,
             tabId,
             state: job.state,
-            errorCode: job.error.code,
-            retryable: job.error.retryable,
+            reasonCode: "RECOVERY_WINDOW_ELAPSED",
         });
-        await this.closeWorkerTab(job);
-        this.releaseDispatchAttempt(attempt);
     }
     /** Reads and validates one worker response before exposing its bounded untrusted result. */
     async collectJob(run, job) {
@@ -1046,7 +1072,12 @@ export class AgentRuntime {
             const snapshot = await this.readFreshSnapshot(attempt);
             if (snapshot) {
                 const snapshotResult = this.acceptWorkerSnapshot(attempt, snapshot);
-                if (snapshotResult === "accepted" || snapshotResult === "pending")
+                if (snapshotResult === "accepted")
+                    return;
+                const availabilityError = workerAvailabilityError(snapshot);
+                if (availabilityError)
+                    throw new Error(`${availabilityError.code}: ${availabilityError.message}`);
+                if (snapshotResult === "pending")
                     return;
             }
             const worker = await this.browser.request("read_chatgpt_worker", { tabId });
@@ -1056,6 +1087,9 @@ export class AgentRuntime {
             job.transientFailures = 0;
             this.rememberObservation(job, worker, "initial_read");
             if (!worker.ready || worker.generating || !worker.latestAssistantText) {
+                const availabilityError = workerAvailabilityError(worker);
+                if (availabilityError)
+                    throw new Error(`${availabilityError.code}: ${availabilityError.message}`);
                 job.state = "GENERATING";
                 return;
             }
@@ -1064,6 +1098,9 @@ export class AgentRuntime {
             }
             if (this.acceptObservation(attempt, worker))
                 return;
+            const availabilityError = workerAvailabilityError(worker);
+            if (availabilityError)
+                throw new Error(`${availabilityError.code}: ${availabilityError.message}`);
             await this.recoverFinishedObservation(attempt, worker);
         }
         catch (error) {

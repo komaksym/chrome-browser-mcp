@@ -3,43 +3,123 @@ export type ChatGptWorkerCommand =
   | { action: "read" }
   | { action: "snapshot"; tabId: number };
 
+export interface ChatGptWorkerSnapshot {
+  ready: boolean;
+  generating: boolean;
+  latestUserText: string | null;
+  latestUserTruncated: boolean;
+  latestAssistantText: string | null;
+  latestAssistantTruncated: boolean;
+  rateLimited: boolean;
+  revision: number;
+  timestamp: number;
+}
+
+interface ChatGptWorkerReadResult {
+  ready: boolean;
+  generating: boolean;
+  latestUserText: string | null;
+  latestUserTruncated: boolean;
+  latestAssistantText: string | null;
+  latestAssistantTruncated: boolean;
+  rateLimited: boolean;
+}
+
+interface ChatGptWorkerSnapshotResult {
+  snapshot: ChatGptWorkerSnapshot;
+}
+
+interface ChatGptWorkerSubmitResult {
+  submitted: true;
+  snapshot?: ChatGptWorkerSnapshot;
+}
+
+type ChatGptWorkerCommandResult =
+  | Promise<ChatGptWorkerSubmitResult>
+  | ChatGptWorkerReadResult
+  | ChatGptWorkerSnapshotResult;
+
+export function runChatGptWorkerCommand(
+  command: Extract<ChatGptWorkerCommand, { action: "submit" }>,
+): Promise<ChatGptWorkerSubmitResult>;
+export function runChatGptWorkerCommand(
+  command: Extract<ChatGptWorkerCommand, { action: "read" }>,
+): ChatGptWorkerReadResult;
+export function runChatGptWorkerCommand(
+  command: Extract<ChatGptWorkerCommand, { action: "snapshot" }>,
+): ChatGptWorkerSnapshotResult;
+export function runChatGptWorkerCommand(command: ChatGptWorkerCommand): ChatGptWorkerCommandResult;
+
 // This function is injected with chrome.scripting.executeScript, so it must remain self-contained.
 /** Submits a worker prompt or reads the exact bounded state of the latest ChatGPT exchange. */
 export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
   const composerSelector = "#prompt-textarea";
-  const sendSelector = 'button[data-testid="send-button"]';
+  const sendSelector = 'button[data-testid="send-button"], #composer-submit-button';
   const userMessageSelector = '[data-message-author-role="user"]';
   const assistantMessageSelector = '[data-message-author-role="assistant"]';
   const generatingSelector =
-    'button[data-testid="stop-button"], button[aria-label*="Stop generating"], button[aria-label="Stop"]';
+    'button[data-testid="stop-button"], button[aria-label*="Stop generating"], button[aria-label="Stop"], #composer-submit-button[aria-label*="Stop"]';
   const maxAssistantCharacters = 30_000;
   const maxUserCharacters = 110_000;
   const truncationNotice = "\n\n[Worker output truncated for safety]\n\n";
   const completionMarkerTailCharacters = 1_024;
+  const composerStateCommitDelayMilliseconds = 50;
+  const completionMarkerPattern = /<<<SUBAGENT_DONE\s*:\s*([A-Za-z0-9_-]+(?:\s*-\s*[A-Za-z0-9_-]+)*)\s*>>>/g;
+  const rateLimitDialogSelector = '[role="dialog"], [role="alertdialog"], [role="alert"], [aria-modal="true"]';
+  const rateLimitTestIdSelector = '[data-testid*="rate-limit"], [data-testid*="rate_limit"]';
+  const rateLimitPhrases = [
+    "too many requests",
+    "making requests too quickly",
+    "temporarily limited access to your conversations",
+  ];
   const snapshotPublishDelayMilliseconds = 50;
-  type Snapshot = {
-    ready: boolean;
-    generating: boolean;
-    latestUserText: string | null;
-    latestUserTruncated: boolean;
-    latestAssistantText: string | null;
-    latestAssistantTruncated: boolean;
-    revision: number;
-    timestamp: number;
-  };
   type ObserverState = {
     tabId: number;
     observer: MutationObserver;
-    snapshot?: Snapshot;
+    snapshot?: ChatGptWorkerSnapshot;
     pendingPublish?: ReturnType<typeof setTimeout>;
   };
   const observerHost = globalThis as typeof globalThis & {
     __chromeBrowserMcpChatGptWorkerObserver?: ObserverState;
   };
 
+  /** Returns whether one modal-like element is currently visible to the user. */
+  const isVisibleElement = (node: Element): boolean => {
+    if (!(node instanceof HTMLElement)) return false;
+    const checkVisibility = (node as HTMLElement & { checkVisibility?: () => boolean }).checkVisibility;
+    if (typeof checkVisibility === "function") return checkVisibility.call(node);
+    if (node.hidden || node.getAttribute("aria-hidden") === "true") return false;
+    const style = typeof getComputedStyle === "function" ? getComputedStyle(node) : undefined;
+    return style?.display !== "none" && style?.visibility !== "hidden";
+  };
+
+  /** Detects rate-limit UI only within an explicit dialog/test-id boundary, never in assistant prose. */
+  const rateLimitModalVisible = (): boolean => {
+    if (Array.from(document.querySelectorAll(rateLimitTestIdSelector)).some(isVisibleElement)) return true;
+    return Array.from(document.querySelectorAll(rateLimitDialogSelector)).some((node) => {
+      if (!isVisibleElement(node)) return false;
+      const text = node.textContent?.toLowerCase() ?? "";
+      return rateLimitPhrases.some((phrase) => text.includes(phrase));
+    });
+  };
+
   /** Reads all outermost message-content blocks in display order without duplicating nested markup. */
   const exactMessageText = (element: Element | undefined): string | null => {
     if (!element) return null;
+    const findCompletionMarker = (value: string | undefined): string | undefined => {
+      if (typeof value !== "string") return undefined;
+      const matches = Array.from(value.matchAll(completionMarkerPattern));
+      const payload = matches.at(-1)?.[1];
+      return payload ? `<<<SUBAGENT_DONE:${payload.replace(/\s+/g, "")}>>>` : undefined;
+    };
+    const normalizeCompletionMarkers = (value: string): string =>
+      value.replace(completionMarkerPattern, (match) => findCompletionMarker(match) ?? match);
+    const markerTextValues = (node: Node): string[] => {
+      const values: string[] = [];
+      if (node instanceof HTMLElement && typeof node.innerText === "string") values.push(node.innerText);
+      if (typeof node.textContent === "string" && node.textContent !== values[0]) values.push(node.textContent);
+      return values;
+    };
     const contentSelector = ".markdown, [data-message-content]";
     const candidates = [
       ...(element.matches(contentSelector) ? [element] : []),
@@ -47,12 +127,29 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
     ];
     const blocks = candidates.filter((candidate) => !candidates.some((other) => other !== candidate && other.contains(candidate)));
     const textBlocks = blocks.length > 0 ? blocks : [element];
-    return textBlocks
-      .map((block) => {
-        const html = block as HTMLElement;
-        return typeof html.innerText === "string" ? html.innerText : block.textContent ?? "";
-      })
-      .join("\n\n");
+    const textBlockValues = textBlocks.map((block) => {
+      const html = block as HTMLElement;
+      return {
+        rendered: typeof html.innerText === "string" ? html.innerText : block.textContent ?? "",
+        dom: block.textContent ?? "",
+      };
+    });
+    const text = textBlockValues.map(({ rendered }) => rendered).join("\n\n");
+    const marker = element.matches(assistantMessageSelector)
+      ? markerTextValues(element)
+          .map(findCompletionMarker)
+          .find((value): value is string => Boolean(value))
+      : undefined;
+    if (marker) {
+      const normalizedDomText = textBlockValues
+        .map(({ rendered, dom }) => (findCompletionMarker(dom) === marker ? normalizeCompletionMarkers(dom) : rendered))
+        .join("\n\n");
+      if (normalizedDomText !== text && normalizedDomText.includes(marker)) return normalizedDomText;
+    }
+    if (marker && !text.includes(marker)) {
+      return text ? `${text}\n\n${marker}` : marker;
+    }
+    return normalizeCompletionMarkers(text);
   };
 
   /** Caps browser-derived assistant text while retaining its final protocol marker in the suffix. */
@@ -82,6 +179,21 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
     return { composer, ready };
   };
 
+  /** Selects the active send control when ChatGPT leaves older composer controls in the DOM. */
+  const activeSendButton = (): HTMLButtonElement | undefined =>
+    Array.from(document.querySelectorAll(sendSelector)).find((element): element is HTMLButtonElement => {
+      if (!(element instanceof HTMLButtonElement) || element.disabled) return false;
+      const checkVisibility = (element as HTMLButtonElement & { checkVisibility?: () => boolean }).checkVisibility;
+      return typeof checkVisibility !== "function" || checkVisibility.call(element);
+    });
+
+  /** Replaces a contenteditable value using the same input event contract as the page action helper. */
+  const replaceContentEditable = (element: HTMLElement, value: string): void => {
+    element.focus();
+    element.textContent = value;
+    element.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+  };
+
   /** Finds the last removed message node so a same-batch virtualization can still be captured. */
   const latestRemovedMessage = (records: MutationRecord[], selector: string): Element | undefined => {
     const candidates: Element[] = [];
@@ -96,7 +208,7 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
   };
 
   /** Captures current page state, preserving previously seen turn text after DOM virtualization. */
-  const captureSnapshot = (previous?: Snapshot, records: MutationRecord[] = []): Snapshot => {
+  const captureSnapshot = (previous?: ChatGptWorkerSnapshot, records: MutationRecord[] = []): ChatGptWorkerSnapshot => {
     const userMessages = Array.from(document.querySelectorAll(userMessageSelector));
     const assistantMessages = Array.from(document.querySelectorAll(assistantMessageSelector));
     const user = boundedUserText(
@@ -114,13 +226,14 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
       latestUserTruncated: user.text === null ? previous?.latestUserTruncated ?? false : user.truncated,
       latestAssistantText: assistant.text ?? previous?.latestAssistantText ?? null,
       latestAssistantTruncated: assistant.text === null ? previous?.latestAssistantTruncated ?? false : assistant.truncated,
+      rateLimited: rateLimitModalVisible(),
       revision: (previous?.revision ?? 0) + 1,
       timestamp: Math.max(1, Date.now(), (previous?.timestamp ?? 0) + 1),
     };
   };
 
   /** Sends one already-captured bounded snapshot through the extension event channel. */
-  const sendSnapshot = (state: ObserverState, snapshot: Snapshot): void => {
+  const sendSnapshot = (state: ObserverState, snapshot: ChatGptWorkerSnapshot): void => {
     try {
       const pending: unknown = chrome.runtime.sendMessage({ type: "chatgpt_worker_snapshot", tabId: state.tabId, snapshot });
       if (pending && typeof (pending as { then?: unknown }).then === "function") {
@@ -132,7 +245,7 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
   };
 
   /** Captures and sends one current bounded snapshot immediately. */
-  const publishSnapshot = (state: ObserverState): Snapshot => {
+  const publishSnapshot = (state: ObserverState): ChatGptWorkerSnapshot => {
     const snapshot = captureSnapshot(state.snapshot);
     state.snapshot = snapshot;
     sendSnapshot(state, snapshot);
@@ -140,7 +253,7 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
   };
 
   /** Starts one page-local observer and returns its latest bounded snapshot. */
-  const observe = (tabId: number, refresh = false): Snapshot => {
+  const observe = (tabId: number, refresh = false): ChatGptWorkerSnapshot => {
     const existing = observerHost.__chromeBrowserMcpChatGptWorkerObserver;
     if (existing?.tabId === tabId && existing.snapshot) {
       if (!refresh) return existing.snapshot;
@@ -210,25 +323,37 @@ export function runChatGptWorkerCommand(command: ChatGptWorkerCommand) {
       if (descriptor?.set) descriptor.set.call(composer, command.prompt);
       else composer.value = command.prompt;
     } else if (composer.isContentEditable || composer.getAttribute("contenteditable") === "true") {
-      composer.textContent = command.prompt;
+      replaceContentEditable(composer, command.prompt);
     } else {
       throw new Error("CHATGPT_NOT_READY: composer is not editable");
     }
 
-    composer.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
     composer.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
 
-    const sendButton = document.querySelector(sendSelector);
-    if (!(sendButton instanceof HTMLButtonElement) || sendButton.disabled) {
-      throw new Error("CHATGPT_NOT_READY: send button is not ready");
-    }
-    sendButton.click();
-    return snapshot === undefined ? { submitted: true as const } : { submitted: true as const, snapshot };
+    return new Promise((resolve, reject) => {
+      setTimeout(() => {
+        const sendButton = activeSendButton();
+        if (!sendButton) {
+          reject(new Error("CHATGPT_NOT_READY: send button is not ready"));
+          return;
+        }
+        sendButton.click();
+        resolve(snapshot === undefined ? { submitted: true as const } : { submitted: true as const, snapshot });
+      }, composerStateCommitDelayMilliseconds);
+    });
   }
 
   const userMessages = Array.from(document.querySelectorAll(userMessageSelector));
   const assistantMessages = Array.from(document.querySelectorAll(assistantMessageSelector));
   const user = boundedUserText(exactMessageText(userMessages.at(-1)));
   const assistant = boundedAssistantText(exactMessageText(assistantMessages.at(-1)));
-  return { ready, generating: document.querySelector(generatingSelector) !== null, latestUserText: user.text, latestUserTruncated: user.truncated, latestAssistantText: assistant.text, latestAssistantTruncated: assistant.truncated };
+  return {
+    ready,
+    generating: document.querySelector(generatingSelector) !== null,
+    latestUserText: user.text,
+    latestUserTruncated: user.truncated,
+    latestAssistantText: assistant.text,
+    latestAssistantTruncated: assistant.truncated,
+    rateLimited: rateLimitModalVisible(),
+  };
 }
