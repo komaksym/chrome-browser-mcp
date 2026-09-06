@@ -1,0 +1,28 @@
+name: Workspace Export
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: issue-47-workspace
+          path: |
+            .
+            !.git
+          include-hidden-files: true
+          retention-days: 1
