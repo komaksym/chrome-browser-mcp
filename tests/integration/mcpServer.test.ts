@@ -347,7 +347,7 @@ describe("MCP HTTP server", () => {
         },
       ],
     });
-    expect(closeCalls).toBe(0);
+    expect(closeCalls).toBe(2);
     await client.close();
   });
 

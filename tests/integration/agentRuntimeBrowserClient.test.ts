@@ -57,6 +57,9 @@ describe("AgentRuntime with BrowserClient", () => {
           case "read_chatgpt_worker_snapshot":
             result = {};
             break;
+          case "close_tab":
+            result = { closed: true };
+            break;
           default:
             throw new Error(`Unexpected browser method: ${request.method}`);
         }
@@ -188,6 +191,12 @@ describe("AgentRuntime with BrowserClient", () => {
             directReads += 1;
             result = {};
             break;
+          case "close_tab": {
+            const tabId = request.params.tabId as number;
+            liveTabs.delete(tabId);
+            result = { closed: true };
+            break;
+          }
           default:
             throw new Error(`Unexpected browser method: ${request.method}`);
         }
