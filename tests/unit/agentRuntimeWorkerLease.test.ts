@@ -239,7 +239,7 @@ describe("AgentRuntime worker lease behavior", () => {
 
     expect(collected.results).toHaveLength(1);
     expect(collected.pending[0]?.state).toBe("DISPATCHED");
-    expect(runtime.isWorkerTab(1)).toBe(true);
+    expect(runtime.isWorkerTab(1)).toBe(false);
     expect(openCalls).toBe(2);
   });
 
@@ -603,10 +603,12 @@ describe("AgentRuntime worker lease behavior", () => {
       },
     });
     await flushUntil(() => harness.openCalls() === 2, "verified completion did not release capacity");
-    expect(runtime.isWorkerTab(1)).toBe(true);
+    expect(runtime.isWorkerTab(1)).toBe(false);
+    expect(harness.closed).toEqual([1]);
 
     harness.emit({ type: "agent_worker_tab_removed", tabId: 1 });
-    await flushUntil(() => !runtime.isWorkerTab(1), "verified worker ownership was not cleaned up");
+    for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+    expect(harness.openCalls()).toBe(2);
 
     const view = await runtime.collectAgents(spawned.run_id);
     expect(view.results).toMatchObject([

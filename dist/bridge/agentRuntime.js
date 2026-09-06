@@ -252,7 +252,7 @@ export class AgentRuntime {
             const attempt = this.currentDispatchAttempt(run, job);
             if (!attempt || !this.acceptFreshSnapshot(job, event.snapshot))
                 return;
-            const outcome = this.acceptWorkerSnapshot(attempt, event.snapshot);
+            const outcome = await this.acceptWorkerSnapshot(attempt, event.snapshot);
             if (outcome === "accepted")
                 await this.schedule();
         });
@@ -448,7 +448,7 @@ export class AgentRuntime {
                 ? this.browser.latestChatGptWorkerSnapshot(tabId)
                 : undefined;
             if (this.acceptFreshSnapshot(attempt.job, cached)) {
-                const outcome = this.acceptWorkerSnapshot(attempt, cached);
+                const outcome = await this.acceptWorkerSnapshot(attempt, cached);
                 if (outcome === "accepted") {
                     releasedCapacity = true;
                     continue;
@@ -457,7 +457,7 @@ export class AgentRuntime {
             const snapshot = await this.readCurrentSnapshot(attempt, cached);
             if (!snapshot)
                 continue;
-            const outcome = this.acceptWorkerSnapshot(attempt, snapshot);
+            const outcome = await this.acceptWorkerSnapshot(attempt, snapshot);
             if (outcome === "accepted")
                 releasedCapacity = true;
         }
@@ -721,14 +721,15 @@ export class AgentRuntime {
             this.releaseWorkerLease(job, leaseId);
     }
     /** Closes a worker tab and retains ownership when cleanup fails, preventing generic tool access. */
-    async closeWorkerTab(job) {
-        const tabId = job.tabId;
+    async closeWorkerTab(job, expectedTabId = job.tabId) {
+        const tabId = expectedTabId;
         if (tabId === undefined)
             return;
         this.diagnostics.log("debug", "agent.worker.tab.close_started", { jobId: job.jobId, tabId });
         try {
             await this.browser.request("close_tab", { tabId });
-            job.tabId = undefined;
+            if (job.tabId === tabId)
+                job.tabId = undefined;
             this.diagnostics.log("info", "agent.worker.tab.closed", { jobId: job.jobId, tabId, cleaned: true });
         }
         catch (error) {
@@ -864,7 +865,7 @@ export class AgentRuntime {
         return true;
     }
     /** Applies the same identity, generation, and completion-marker rules to one fresh snapshot. */
-    acceptWorkerSnapshot(attempt, snapshot) {
+    async acceptWorkerSnapshot(attempt, snapshot) {
         if (!this.isDispatchAttemptActive(attempt))
             return "fallback";
         const { job } = attempt;
@@ -893,7 +894,7 @@ export class AgentRuntime {
             });
             return "pending";
         }
-        if (this.acceptObservation(attempt, worker))
+        if (await this.acceptObservation(attempt, worker))
             return "accepted";
         return "fallback";
     }
@@ -925,10 +926,11 @@ export class AgentRuntime {
         return worker.ready && !worker.generating && Boolean(worker.latestAssistantText);
     }
     /** Validates one observation and completes the job when the exact dispatched turn and marker are present. */
-    acceptObservation(attempt, worker) {
+    async acceptObservation(attempt, worker) {
         if (!this.isDispatchAttemptActive(attempt) || !this.generationDefinitelyFinished(worker))
             return false;
         const { job } = attempt;
+        const tabId = job.tabId;
         if (!workerIdentityMatches(job, worker)) {
             throw new Error("WORKER_IDENTITY_MISMATCH: latest user message does not match the dispatched job");
         }
@@ -955,6 +957,7 @@ export class AgentRuntime {
             hasResult: true,
         });
         this.releaseDispatchAttempt(attempt);
+        await this.closeWorkerTab(job, tabId);
         return true;
     }
     /** Reads the same worker turn with bounded backoff and never submits another prompt. */
@@ -976,7 +979,7 @@ export class AgentRuntime {
                 if (!this.isDispatchAttemptActive(attempt))
                     return undefined;
                 this.rememberObservation(job, latest, source);
-                if (this.acceptObservation(attempt, latest))
+                if (await this.acceptObservation(attempt, latest))
                     return latest;
             }
             catch (error) {
@@ -1071,7 +1074,7 @@ export class AgentRuntime {
         try {
             const snapshot = await this.readFreshSnapshot(attempt);
             if (snapshot) {
-                const snapshotResult = this.acceptWorkerSnapshot(attempt, snapshot);
+                const snapshotResult = await this.acceptWorkerSnapshot(attempt, snapshot);
                 if (snapshotResult === "accepted")
                     return;
                 const availabilityError = workerAvailabilityError(snapshot);
@@ -1096,7 +1099,7 @@ export class AgentRuntime {
             if (!workerIdentityMatches(job, worker)) {
                 throw new Error("WORKER_IDENTITY_MISMATCH: latest user message does not match the dispatched job");
             }
-            if (this.acceptObservation(attempt, worker))
+            if (await this.acceptObservation(attempt, worker))
                 return;
             const availabilityError = workerAvailabilityError(worker);
             if (availabilityError)
