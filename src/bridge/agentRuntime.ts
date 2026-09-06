@@ -1278,19 +1278,20 @@ export class AgentRuntime {
     try {
       const snapshot = await this.readFreshSnapshot(attempt);
       if (snapshot) {
+        const snapshotResult = this.acceptWorkerSnapshot(attempt, snapshot);
+        if (snapshotResult === "accepted") return;
         const availabilityError = workerAvailabilityError(snapshot);
         if (availabilityError) throw new Error(`${availabilityError.code}: ${availabilityError.message}`);
-        const snapshotResult = this.acceptWorkerSnapshot(attempt, snapshot);
-        if (snapshotResult === "accepted" || snapshotResult === "pending") return;
+        if (snapshotResult === "pending") return;
       }
       const worker = await this.browser.request<WorkerReadResult>("read_chatgpt_worker", { tabId });
       if (!this.isDispatchAttemptActive(attempt)) return;
       job.error = undefined;
       job.transientFailures = 0;
       this.rememberObservation(job, worker, "initial_read");
-      const availabilityError = workerAvailabilityError(worker);
-      if (availabilityError) throw new Error(`${availabilityError.code}: ${availabilityError.message}`);
       if (!worker.ready || worker.generating || !worker.latestAssistantText) {
+        const availabilityError = workerAvailabilityError(worker);
+        if (availabilityError) throw new Error(`${availabilityError.code}: ${availabilityError.message}`);
         job.state = "GENERATING";
         return;
       }
@@ -1298,6 +1299,8 @@ export class AgentRuntime {
         throw new Error("WORKER_IDENTITY_MISMATCH: latest user message does not match the dispatched job");
       }
       if (this.acceptObservation(attempt, worker)) return;
+      const availabilityError = workerAvailabilityError(worker);
+      if (availabilityError) throw new Error(`${availabilityError.code}: ${availabilityError.message}`);
       await this.recoverFinishedObservation(attempt, worker);
     } catch (error) {
       await this.failJob(attempt, error);

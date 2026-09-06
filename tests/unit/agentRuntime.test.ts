@@ -664,6 +664,31 @@ describe("AgentRuntime", () => {
  });
  });
 
+ it("keeps a verified response when the rate-limit UI appears after generation", async () => {
+ const { browser } = createRecoveryBrowser({
+  read: (current) => Promise.resolve({
+   ready: true,
+   generating: false,
+   latestUserText: current.submittedPrompt,
+   latestAssistantText: `Completed before the popup.\n${completionMarker(current.submittedPrompt)}`,
+   latestAssistantTruncated: false,
+   rateLimited: true,
+   tab: { tabId: 1, windowId: 10, active: false, discarded: false, status: "complete" },
+  }),
+ });
+ const runtime = new AgentRuntime(browser);
+ const spawned = await runtime.spawnAgents([{ agent_id: "completed-under-popup", prompt: "answer once" }], 1);
+
+ await expect(runtime.collectAgents(spawned.run_id)).resolves.toMatchObject({
+  state: "COMPLETE",
+  failed: [],
+  results: [{
+   agent_id: "completed-under-popup",
+   result: { text: "Completed before the popup." },
+  }],
+ });
+ });
+
  it("does not classify rate-limit prose as a worker availability failure", async () => {
  const { browser } = createRecoveryBrowser({
   read: (current) => Promise.resolve({
@@ -1101,6 +1126,56 @@ describe("AgentRuntime", () => {
     expect(collected).toMatchObject({
       state: "FAILED",
       failed: [{ agent_id: "snapshot-rate-limit", error: { code: "CHATGPT_RATE_LIMITED" } }],
+    });
+  });
+
+  it("keeps a verified fresh snapshot when the rate-limit UI appears after generation", async () => {
+    let submittedPrompt = "";
+    let directReads = 0;
+    let snapshot: Record<string, unknown> | undefined;
+    const browser = {
+      request: (method: string, args: Record<string, unknown> = {}) => {
+        if (method === "resolve_chatgpt_anchor") return Promise.resolve({ tab: { tabId: 9000, windowId: 42 } });
+        if (method === "open_agent_worker_tab") return Promise.resolve({ tab: { tabId: 805 } });
+        if (method === "chatgpt_worker_submit") {
+          submittedPrompt = args.prompt as string;
+          const timestamp = Date.now() + 10;
+          snapshot = {
+            ready: true,
+            generating: false,
+            latestUserText: submittedPrompt,
+            latestUserTruncated: false,
+            latestAssistantText: `Snapshot completed before the popup.\n${completionMarker(submittedPrompt)}`,
+            latestAssistantTruncated: false,
+            rateLimited: true,
+            revision: 2,
+            timestamp,
+          };
+          return Promise.resolve({ submitted: true, snapshot: { revision: 1, timestamp } });
+        }
+        if (method === "read_chatgpt_worker") {
+          directReads += 1;
+          return Promise.reject(new Error("DIRECT_READ_SHOULD_NOT_RUN"));
+        }
+        if (method === "close_tab") return Promise.resolve({ closed: true });
+        return Promise.resolve({});
+      },
+      latestChatGptWorkerSnapshot: () => snapshot,
+      forgetChatGptWorkerSnapshot: () => undefined,
+    } as unknown as BrowserClient;
+    const runtime = new AgentRuntime(browser);
+    const spawned = await runtime.spawnAgents([{ agent_id: "snapshot-completed-under-popup", prompt: "answer once" }], 1);
+
+    const collected = await runtime.collectAgents(spawned.run_id);
+
+    expect(directReads).toBe(0);
+    expect(collected).toMatchObject({
+      state: "COMPLETE",
+      failed: [],
+      results: [{
+        agent_id: "snapshot-completed-under-popup",
+        result: { text: "Snapshot completed before the popup." },
+      }],
     });
   });
 
